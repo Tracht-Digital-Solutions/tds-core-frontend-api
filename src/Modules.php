@@ -9,6 +9,7 @@ use Tds\Ext\ContactTickets\ContactTicketsModule;
 use Tds\Ext\Customers\CustomersModule;
 use Tds\Ext\Documents\DocumentsModule;
 use Tds\Ext\Lexware\LexwareModule;
+use Tds\Ext\LiveChatCta\LiveChatCtaModule;
 use Tds\Ext\Messages\MessagesModule;
 use Tds\Ext\Projects\ProjectsModule;
 use Tds\Ext\SupportTickets\SupportTicketsModule;
@@ -41,6 +42,7 @@ final class Modules
             new DocumentsModule(),
             new SupportTicketsModule(),
             new ContactTicketsModule(),
+            new LiveChatCtaModule(),
             new WebsiteCmsModule(),
             new BlogCmsModule(),
         ];

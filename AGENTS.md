@@ -12,14 +12,17 @@ One PHP-FPM app, no service processes. The base ships the kernel routes
 (`/healthz`, `/admin/permissions`, `/wiki.json`, `/me/dashboard-layout`,
 `/admin/settings/{ns}`); it MUST boot with zero modules.
 
-`Modules::enabled()` currently composes **all 12** extensions (the union both
+`Modules::enabled()` currently composes **all 13** extensions (the union both
 products need) so this single backend serves both the admin and customer
 frontends: time-tracker, customers, billing, lexware, tools, messages, projects,
 documents, **support-tickets** (`/tickets`, `/admin/tickets`), **contact-tickets**
-(`/contact`), **website-cms** (`/cms/*`), **blog-cms** (`/blogs/*`, `/blog/*`).
-The last four replaced the archived content/contact backends and serve the public
-blog/landingpage build-fetch + the admin CMS/ticket UIs; they were added once
-their migration version prefixes were made globally unique (see below).
+(`/contact`), **live-chat-cta** (`/live-chat-cta/*` public + `/admin/live-chat-cta/*`),
+**website-cms** (`/cms/*`), **blog-cms** (`/blogs/*`, `/blog/*`).
+The four CMS/ticket extensions replaced the archived content/contact backends and
+serve the public blog/landingpage build-fetch + the admin CMS/ticket UIs;
+live-chat-cta backs the floating support widget (`LiveChatCta` island in
+tds-shared-pkg). All were added once their migration version prefixes were made
+globally unique (see below).
 
 **Public content delivery** is the successor to tds-content-api's open read, served
 by two of those modules as their only UNAUTHENTICATED routes (`AuthMiddleware` is
@@ -121,7 +124,7 @@ on duplicate numeric versions (not just duplicate class names). Each module owns
 distinct date band — time-tracker `20260713*`, lexware `20260719000*`, customers
 `20260719100*`, billing `20260719200*`, tools `20260720*`, messages/projects/
 documents `20260722*`, support-tickets `20260725*`, contact-tickets `20260726*`,
-website-cms `20260727*`, blog-cms `20260728*`. A new migration stays in its
+website-cms `20260727*`, blog-cms `20260728*`, live-chat-cta `20260801*`. A new migration stays in its
 module's band. (The four CMS/ticket modules were renumbered off overlapping
 `20260714*`/`20260718*` prefixes when they were composed in.)
 
