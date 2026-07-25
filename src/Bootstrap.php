@@ -362,10 +362,29 @@ final class Bootstrap
         return (string) $v;
     }
 
-    /** @return string[] */
+    /**
+     * Allowed CORS origins = a hardcoded baseline of the first-party
+     * *.tracht-digital.de production surfaces, merged with any extra origins from
+     * CORS_ALLOWED_ORIGINS (deduped). The baseline means the widgets/frontends
+     * always work even if the host `.env` is unset or stale — the env only ADDS
+     * (e.g. http://localhost:4321 for dev). All baseline entries are TDS's own
+     * domains; the live-chat-cta bubble on the public site + blog needs
+     * tracht-digital.de + blog. here (it calls with credentials).
+     *
+     * @return string[]
+     */
     private static function corsOrigins(): array
     {
+        $baseline = [
+            'https://tracht-digital.de',
+            'https://blog.tracht-digital.de',
+            'https://management.tracht-digital.de',
+            'https://app.tracht-digital.de',
+            'https://tools.tracht-digital.de',
+            'https://auth.tracht-digital.de',
+        ];
         $raw = self::env('CORS_ALLOWED_ORIGINS', '');
-        return array_values(array_filter(array_map('trim', explode(',', $raw))));
+        $extra = array_filter(array_map('trim', explode(',', $raw)));
+        return array_values(array_unique([...$baseline, ...$extra]));
     }
 }
