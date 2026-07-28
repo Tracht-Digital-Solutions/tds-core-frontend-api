@@ -139,6 +139,43 @@ catch-all). This repo still has **no CI of its own** — local phpunit is the ga
 The in-process auto-migrator (above) brings the schema up on the first request
 after deploy.
 
+## Tests
+
+```bash
+composer test    # phpunit, 58 tests
+```
+
+`tests/JwksClientTest.php` covers the kernel's **auth boundary**. Every composed
+module trusts `UserContext` and never re-verifies a token, so this class is the
+single place where "is this caller who they say they are" is decided for the
+whole frontend API. A real 2048-bit RSA keypair is generated per test and the
+JWKS is hand-built from it, so a forged token is genuinely forged.
+
+The half that is easy to get wrong is the **disk cache**, whose two failure
+modes point in opposite directions:
+
+- **too little caching** hammers tds-auth-api on every request that carries a
+  token — which is all of them;
+- **too much** keeps trusting a key that has been rotated out.
+
+Both are pinned (a second `verify()` makes no HTTP call; a cache older than the
+TTL is refetched), along with the recovery paths: a corrupt or truncated cache
+file refetches rather than bricking auth, a warm cache written by an earlier
+process is honoured, and an **invalid JWKS response is never written to disk** —
+caching garbage would keep auth broken for the whole TTL.
+
+Verified by mutation: 10 deliberate breakages introduced, 10 caught — including
+replacing `JWT::decode` with a bare base64 payload read, i.e. skipping signature
+verification altogether.
+
+> The Windows `OPENSSL_CONF` gotcha documented in `tds-auth-api` applies here
+> too: without it `openssl_pkey_new` fails and these tests **skip** rather than
+> run.
+>
+> Note also that `composer install` cannot run from inside a git worktree — the
+> `path` repo (`../tds-frontend-contract-pkg`) resolves relative to the checkout
+> root. Copy `vendor/` from the main checkout instead.
+
 ## After a change
 
 Bump `version` in `composer.json`, update this file + README, commit together.
