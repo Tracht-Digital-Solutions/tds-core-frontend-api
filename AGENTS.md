@@ -77,6 +77,17 @@ lands, move that DDL into a base migration and drop `ensureSchema()`.
   prefixes with its module id; the base only aggregates the paths. **Migration
   *versions* (the numeric filename prefix) must also be unique across extensions**
   — they share ONE `phinxlog`, so a duplicate version makes Phinx throw.
+- **…and each migration's FILE name must map to its class name.** Phinx derives the
+  expected class from the file name (`Util::mapFileNameToClassName`: drop the version
+  prefix, `ucwords` on `_`), so `20260801000006_live_chat_cta_seed_faq_login.php` ⇒
+  `LiveChatCtaSeedFaqLogin`. A mismatch throws `InvalidArgumentException: Could not
+  find class …` **while the set is being scanned**, i.e. before anything is applied —
+  so one badly-named file in one extension means **no extension migrates at all** and
+  every route 500s on a fresh DB. That is exactly what `tds-ext-live-chat-cta-pkg`
+  (5 files) and `tds-ext-tools-pkg` (2) shipped with until 2026-08-04: module-prefixed
+  classes (`LiveChatCtaCreateFaq`) behind verb-first file names (`create_live_chat_cta_faq`).
+  Put the module prefix **first in both**. The runner's `classCollision()` scan does not
+  catch this — only running Phinx does.
 - **In-process auto-migrator (`Support/MigrationRunner`).** On the first request
   after a deploy, `Bootstrap::autoMigrate()` applies every enabled extension's
   pending migrations via Phinx's PHP `Manager` (no `proc_open`/cron/CLI php — the
