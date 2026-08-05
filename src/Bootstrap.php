@@ -18,9 +18,13 @@ use Tds\CoreFrontendApi\Auth\TokenVerifier;
 use Tds\CoreFrontendApi\Domain\DashboardLayoutRepository;
 use Tds\CoreFrontendApi\Middleware\AuthMiddleware;
 use Tds\CoreFrontendApi\Middleware\CorsMiddleware;
+use Tds\CoreFrontendApi\Service\AutoUpdater;
+use Tds\CoreFrontendApi\Service\ModuleUpdateConfig;
 use Tds\CoreFrontendApi\Service\NullMailer;
+use Tds\CoreFrontendApi\Service\PackageRegistry;
 use Tds\CoreFrontendApi\Service\SettingsStore;
 use Tds\CoreFrontendApi\Service\SmtpMailer;
+use Tds\CoreFrontendApi\Service\WorkflowDispatcher;
 use Tds\CoreFrontendApi\Support\AnonymousUserContext;
 use Tds\CoreFrontendApi\Support\MigrationRunner;
 use Tds\Frontend\Contract\Mailer;
@@ -72,6 +76,15 @@ final class Bootstrap
         // every enabled extension's pending migrations (no proc_open/cron on the
         // prod host). No-op in tests/boot (no DB) and cheap once applied (marker).
         self::autoMigrate($rootDir, $registry);
+
+        // Unattended module updates. There is no cron on the prod host, so this
+        // piggybacks on request traffic exactly like the auto-migrator does: a
+        // single file read per request, and real work only once per configured
+        // interval. Gated on a DB being configured so tests and cold boot stay
+        // side-effect-free, and it never throws (see AutoUpdater::maybeRun).
+        if (self::env('DB_NAME', '') !== '') {
+            self::autoUpdater($container, $rootDir)->maybeRun();
+        }
 
         // --- Base kernel routes -------------------------------------------------
         $app->get('/healthz', function (Request $request, Response $response) use ($registry): Response {
@@ -193,6 +206,112 @@ final class Bootstrap
             return $response->withHeader('Content-Type', 'application/json');
         });
 
+        // --- Module inventory + update (admin) ----------------------------------
+        // The panel's Module page. The BUILD knows what is installed (each
+        // manifest's version, baked into the static product); this side supplies
+        // the two things a browser cannot: what the registry currently publishes
+        // (the token must never reach the client) and the ability to start the
+        // pipeline that puts a newer version into service.
+        //
+        // POST, not GET, because the package list is the input — the composed set
+        // is a property of the *frontend* build, which the API does not know.
+        $app->post('/admin/modules/check', function (Request $request, Response $response) use ($container, $rootDir): Response {
+            $denied = self::denyUnlessAdmin($container, $response);
+            if ($denied !== null) {
+                return $denied;
+            }
+
+            $config = self::moduleUpdateConfig($container);
+            $body = (array) $request->getParsedBody();
+            $inventory = is_array($body['inventory'] ?? null) ? $body['inventory'] : [];
+            $requested = is_array($body['packages'] ?? null)
+                ? $body['packages']
+                : array_map(static fn ($e): mixed => is_array($e) ? ($e['pkg'] ?? '') : '', $inventory);
+            $packages = array_values(array_filter(
+                array_map(static fn ($p): string => is_string($p) ? trim($p) : '', $requested),
+                static fn (string $p): bool => $p !== '' && PackageRegistry::isAllowed($p),
+            ));
+
+            // Remember the build-time inventory: the pinned ranges live in the
+            // product's package.json, which this API never sees, and the
+            // unattended updater needs them.
+            $updater = self::autoUpdater($container, $rootDir, $config);
+            if ($inventory !== []) {
+                $updater->rememberInventory($inventory);
+            }
+
+            $registry = new PackageRegistry($config->registryToken);
+            $versions = $registry->isConfigured() ? $registry->latestMany($packages) : [];
+
+            $response->getBody()->write(json_encode([
+                'auto' => $updater->state(),
+                'versions' => (object) $versions,
+                'registry' => [
+                    'configured' => $registry->isConfigured(),
+                    // Surfaced verbatim: "Token abgelehnt" and "Paket unbekannt"
+                    // need completely different fixes, and the admin is the one
+                    // who has to make them.
+                    'error' => $registry->lastError(),
+                ],
+                'targets' => $config->targets(),
+                'backend' => self::backendPackageVersions(),
+                'checked_at' => date('c'),
+            ], JSON_THROW_ON_ERROR));
+            return $response->withHeader('Content-Type', 'application/json');
+        });
+
+        // Run the unattended check NOW, regardless of schedule — the panel's
+        // "Jetzt prüfen und aktualisieren". `force` runs it even while the
+        // automation is switched off, so an admin can try it before enabling it.
+        $app->post('/admin/modules/auto-update', function (Request $request, Response $response) use ($container, $rootDir): Response {
+            $denied = self::denyUnlessAdmin($container, $response);
+            if ($denied !== null) {
+                return $denied;
+            }
+            $updater = self::autoUpdater($container, $rootDir);
+            $report = $updater->run(true);
+            $response->getBody()->write(json_encode([
+                'report' => $report,
+                'auto' => $updater->state(),
+            ], JSON_THROW_ON_ERROR));
+            return $response->withHeader('Content-Type', 'application/json');
+        });
+
+        // Start one deploy pipeline. This is what "Modul aktualisieren" does:
+        // there is no runtime module swap — composition is a build step.
+        $app->post('/admin/modules/deploy', function (Request $request, Response $response) use ($container): Response {
+            $denied = self::denyUnlessAdmin($container, $response);
+            if ($denied !== null) {
+                return $denied;
+            }
+
+            $body = (array) $request->getParsedBody();
+            $key = trim((string) ($body['target'] ?? ''));
+            $config = self::moduleUpdateConfig($container);
+            $target = $config->target($key);
+            if ($target === null) {
+                $response->getBody()->write(json_encode([
+                    'error' => 'Unbekanntes oder nicht konfiguriertes Ziel.',
+                    'target' => $key,
+                ], JSON_THROW_ON_ERROR));
+                return $response->withStatus(422)->withHeader('Content-Type', 'application/json');
+            }
+
+            $result = (new WorkflowDispatcher($config->dispatchToken))
+                ->dispatch($target['repo'], $target['workflow'], $config->ref);
+
+            $response->getBody()->write(json_encode([
+                'ok' => $result['ok'],
+                'target' => $key,
+                'repo' => $target['repo'],
+                'workflow' => $target['workflow'],
+                'message' => $result['message'],
+            ], JSON_THROW_ON_ERROR));
+            // 502: the dispatch itself failed upstream — the request was fine.
+            return $response->withStatus($result['ok'] ? 202 : 502)
+                ->withHeader('Content-Type', 'application/json');
+        });
+
         // In-panel API wiki: the full route map of the base + every composed
         // module, introspected from the registered Slim routes at request time
         // (so all modules are present). Admin-only; the panel Wiki page renders
@@ -230,6 +349,95 @@ final class Bootstrap
         });
 
         return $app;
+    }
+
+    /**
+     * Admin gate for a route: returns a ready 401/403 response when the
+     * principal may not proceed, or null when it may.
+     *
+     * The base's older routes inline this same five-line block; new ones use
+     * the helper. Returning the response (rather than throwing) keeps the call
+     * sites' early-return shape.
+     */
+    private static function denyUnlessAdmin(Container $container, Response $response): ?Response
+    {
+        $user = $container->get(UserContext::class);
+        if ($user->isAuthenticated() && $user->isAdmin()) {
+            return null;
+        }
+        $response->getBody()->write(json_encode(['error' => 'Forbidden'], JSON_THROW_ON_ERROR));
+        return $response->withStatus($user->isAuthenticated() ? 403 : 401)
+            ->withHeader('Content-Type', 'application/json');
+    }
+
+    /**
+     * Module-page configuration, read DB-first with an env fallback. The store
+     * is resolved lazily and defensively: without a database the whole page
+     * still renders, reporting "nicht konfiguriert".
+     */
+    private static function moduleUpdateConfig(Container $container): ModuleUpdateConfig
+    {
+        $store = null;
+        try {
+            $store = $container->get(SettingsStoreContract::class);
+        } catch (\Throwable) {
+            // No DB / no container binding — env-only.
+        }
+        return ModuleUpdateConfig::resolve($store, static fn (string $k, ?string $d): string => self::env($k, $d));
+    }
+
+    /**
+     * The unattended module updater, sharing the settings store and the same
+     * `var/` marker convention the auto-migrator uses.
+     */
+    private static function autoUpdater(Container $container, string $rootDir, ?ModuleUpdateConfig $config = null): AutoUpdater
+    {
+        $store = null;
+        try {
+            $store = $container->get(SettingsStoreContract::class);
+        } catch (\Throwable) {
+            /* no DB — the updater degrades to "nothing stored" */
+        }
+        return new AutoUpdater(
+            $config ?? self::moduleUpdateConfig($container),
+            $store,
+            $rootDir . '/var/auto-update',
+        );
+    }
+
+    /**
+     * Installed versions of the first-party Composer packages making up THIS
+     * API bundle — the backend half of every module.
+     *
+     * It matters because a module has two halves on two pipelines: the npm
+     * package a product build composes, and the Composer package the gateway
+     * bundle assembles. Showing only the frontend version would let an admin
+     * conclude a module is up to date while its PHP side is a release behind.
+     *
+     * @return array{modules: string[], packages: array<string,string>}
+     */
+    private static function backendPackageVersions(): array
+    {
+        $packages = [];
+        try {
+            foreach (\Composer\InstalledVersions::getInstalledPackages() as $name) {
+                if (!str_starts_with($name, 'tracht-digital-solutions/')) {
+                    continue;
+                }
+                $version = \Composer\InstalledVersions::getPrettyVersion($name);
+                if (is_string($version) && $version !== '') {
+                    $packages[$name] = $version;
+                }
+            }
+        } catch (\Throwable) {
+            // Composer 1 / no runtime API — the frontend half still renders.
+        }
+        ksort($packages);
+
+        return [
+            'modules' => (new ModuleRegistry(Modules::enabled()))->order(),
+            'packages' => $packages,
+        ];
     }
 
     /**

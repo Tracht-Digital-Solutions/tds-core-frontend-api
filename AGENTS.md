@@ -63,6 +63,63 @@ lands with the assemble pipeline), so this base table **self-bootstraps**: an
 idempotent `CREATE TABLE IF NOT EXISTS` runs once per process. When the migrator
 lands, move that DDL into a base migration and drop `ensureSchema()`.
 
+## Module inventory + updates (`/admin/modules/*`)
+
+The backend of the panel's Module page. Three admin-only routes:
+
+| Route | Does |
+|---|---|
+| `POST /admin/modules/check` | Looks up `dist-tags.latest` for the posted packages (`Service\PackageRegistry`), returns the deploy targets, the installed **Composer** versions of this bundle, and the automation state. Also **stores the posted inventory** — see below. |
+| `POST /admin/modules/deploy` | `workflow_dispatch` on one configured target (`Service\WorkflowDispatcher`). 202 on success, **502** when GitHub refused — the request was fine, the upstream was not. |
+| `POST /admin/modules/auto-update` | Runs the unattended check now, `force`d (so an admin can try the wiring before switching automation on). |
+
+**Why the API proxies the registry.** GitHub Packages needs a `read:packages`
+token even for public packages, and that token must never reach the browser.
+`PackageRegistry` therefore hard-restricts lookups to
+`@tracht-digital-solutions/*` — without that allow-list the check route is a
+generic outbound HTTP proxy for anyone who reaches it (the classic SSRF shape).
+
+**Why POST for a read.** The composed package set is a property of the *frontend*
+build; this API cannot know it. The panel posts its build-time inventory
+(`{pkg, installed, range}`) and that is also what makes unattended updates
+possible at all — the pinned ranges live in the product's `package.json`, which
+this service never sees. Automatic updates therefore start working once an admin
+has opened the Module page once. That bootstrap is deliberate: the alternative is
+this service guessing at another repo's pins.
+
+Config lives in settings namespace **`modules`** (`Service\ModuleUpdateConfig`,
+DB-first with env fallback, both tokens encrypted). An unset `dispatch_token`
+falls back to `registry_token` — one PAT usually carries both scopes. The whole
+resolver is wrapped in try/catch because a host with **no database** is exactly
+when an admin opens this page; a throw there would 500 the one screen that
+explains the problem.
+
+### Unattended updates (`Service\AutoUpdater`)
+
+There is no cron and no `proc_open` on the prod host, so this piggybacks on
+request traffic the same way the auto-migrator does: **one file read per
+request** (`var/auto-update/next-run`) and real work only once per configured
+interval, with the marker claimed *before* the slow part so concurrent requests
+cannot dispatch the same deploy twice. The honest consequence: **an API that
+receives no traffic performs no automatic updates.**
+
+Two hard limits, both asserted in `AutoUpdaterTest`:
+
+- **Frontend target only.** The backend target re-assembles the bundle from every
+  service's and extension's `main`, which would ship whatever is merged but
+  unreleased. Never a decision to take unattended.
+- **In-range versions only.** A newer version outside the pin needs a repin commit
+  in the product repo; dispatching for one would fire a deploy every interval and
+  change nothing. `Service\VersionRange` is the **PHP twin of the host's
+  `lib/moduleUpdates.ts`** — same 0.x caret rule, maintained by hand like the
+  Zod/PHP validator pairs. Change one, change the other. Note `satisfies()`
+  returns **null** for a range it cannot parse: only an explicit `true` is
+  permission to deploy.
+
+Prereleases sort below their release, deliberately — every package repo publishes
+a `@dev` prerelease on each push to `main`, and treating those as newer would
+make the updater deploy continuously.
+
 ## Load-bearing gotchas (carried from the four APIs)
 
 - **CORS middleware is added AFTER `addRoutingMiddleware()`** (Slim is LIFO, so
