@@ -91,11 +91,12 @@ final class MigrationRunner
             return; // already migrated for this exact migration-set — hot path
         }
 
-        // Guard the fatal-redeclaration case BEFORE Phinx includes the files.
-        $collision = $this->classCollision();
-        if ($collision !== null) {
-            $this->log('error', "auto-migrate aborted: duplicate migration class '{$collision}' across extensions "
-                . '(would fatal when included into the shared process)');
+        // Pre-flight the three ways a composed migration set kills itself, BEFORE
+        // Phinx touches the files. All three abort the whole run — not just the
+        // offending extension — so the diagnosis has to name the file.
+        $problem = $this->preflight();
+        if ($problem !== null) {
+            $this->log('error', "auto-migrate aborted: {$problem}");
             return;
         }
 
@@ -170,26 +171,74 @@ final class MigrationRunner
     }
 
     /**
-     * The first migration class name declared by two different files across all
-     * paths, or null when every class name is unique. Scanned as text (an actual
-     * include of a duplicate is the very fatal this guards against).
+     * Scan the composed migration set for the three defects that abort a run,
+     * and return a human-readable description of the first one found.
+     *
+     * All three are checked as TEXT, before Phinx includes anything — including
+     * a duplicate class is the very fatal this guards against, and a name
+     * mismatch throws while the set is merely being *scanned*.
+     *
+     * The three, in the order they have actually hurt:
+     *
+     *  1. **File name ↔ class name.** Phinx derives the expected class from the
+     *     file name (drop the version, `ucwords` on `_`). A mismatch throws
+     *     `Could not find class …` during the scan, which aborts the run for
+     *     EVERY extension — so nothing migrates and every route 500s on a fresh
+     *     database. `tds-ext-live-chat-cta-pkg` (5 files) and `tds-ext-tools-pkg`
+     *     (2) shipped this way and had never applied a single migration; it was
+     *     found by hand on 2026-08-04, because phpunit runs no migration and the
+     *     old guard only compared class names to each other.
+     *  2. **Duplicate class name.** An uncatchable fatal redeclaration on every
+     *     request once two files declare the same class into one process.
+     *  3. **Duplicate version prefix.** Every extension shares ONE `phinxlog`;
+     *     Phinx aborts on a duplicate version even when the classes differ.
      */
-    private function classCollision(): ?string
+    private function preflight(): ?string
     {
-        $seen = [];
+        /** @var array<string,string> $classes class name => file that declared it */
+        $classes = [];
+        /** @var array<string,string> $versions version prefix => file */
+        $versions = [];
+
         foreach ($this->migrationPaths as $dir) {
             foreach ((array) glob(rtrim($dir, '/\\') . '/*.php') as $file) {
-                $src = (string) @file_get_contents((string) $file);
-                if (preg_match_all('/^\s*(?:final\s+|abstract\s+)?class\s+(\w+)/mi', $src, $m) > 0) {
-                    foreach ($m[1] as $class) {
-                        if (isset($seen[$class])) {
-                            return $class;
-                        }
-                        $seen[$class] = true;
+                $file = (string) $file;
+                $base = basename($file);
+
+                if (preg_match('/^(\d+)_(.+)\.php$/', $base, $nm) !== 1) {
+                    return "'{$base}' is not a Phinx migration file name (expected <version>_<snake_case>.php)";
+                }
+                [, $version, $slug] = $nm;
+
+                if (isset($versions[$version])) {
+                    return "duplicate migration version '{$version}' — '{$base}' and '"
+                        . basename($versions[$version]) . "' share one phinxlog";
+                }
+                $versions[$version] = $file;
+
+                $src = (string) @file_get_contents($file);
+                if (preg_match_all('/^\s*(?:final\s+|abstract\s+)?class\s+(\w+)/mi', $src, $m) < 1) {
+                    return "'{$base}' declares no migration class";
+                }
+
+                // Phinx's own derivation, mirrored: strip the version, then
+                // ucwords over the underscores.
+                $expected = str_replace(' ', '', ucwords(str_replace('_', ' ', $slug)));
+                if (!in_array($expected, $m[1], true)) {
+                    return "'{$base}' declares class '{$m[1][0]}' but Phinx expects '{$expected}' "
+                        . '(the file name derives the class — a mismatch aborts EVERY extension, not just this one)';
+                }
+
+                foreach ($m[1] as $class) {
+                    if (isset($classes[$class])) {
+                        return "duplicate migration class '{$class}' — '{$base}' and '"
+                            . basename($classes[$class]) . "' (would fatal when included into the shared process)";
                     }
+                    $classes[$class] = $file;
                 }
             }
         }
+
         return null;
     }
 

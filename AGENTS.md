@@ -143,15 +143,25 @@ make the updater deploy continuously.
   every route 500s on a fresh DB. That is exactly what `tds-ext-live-chat-cta-pkg`
   (5 files) and `tds-ext-tools-pkg` (2) shipped with until 2026-08-04: module-prefixed
   classes (`LiveChatCtaCreateFaq`) behind verb-first file names (`create_live_chat_cta_faq`).
-  Put the module prefix **first in both**. The runner's `classCollision()` scan does not
-  catch this — only running Phinx does.
+  Put the module prefix **first in both**. **The runner now catches this before Phinx
+  runs** (`preflight()`, since 0.10.1) — it derives the expected class from the file
+  name and reports `'<file>' declares class 'X' but Phinx expects 'Y'`. Until then only
+  an actual `phinx migrate` surfaced it, which is why it shipped undetected for weeks.
 - **In-process auto-migrator (`Support/MigrationRunner`).** On the first request
   after a deploy, `Bootstrap::autoMigrate()` applies every enabled extension's
   pending migrations via Phinx's PHP `Manager` (no `proc_open`/cron/CLI php — the
   prod host has none), over all `registry->migrationPaths()` into one `phinxlog`.
   A signature-keyed marker + non-blocking `flock` make it a cheap single-flight
-  no-op after the first run; a class-name collision or failure is logged and
-  swallowed (never fatal), and a failure isn't marked done so it retries. **Gated
+  no-op after the first run; a failure is logged and swallowed (never fatal), and is
+  not marked done so it retries.
+  **`preflight()` scans the composed set as TEXT before Phinx touches it** and aborts on
+  the three defects that would otherwise kill the whole run: a file name that does not map
+  to its class, a duplicate class name (an uncatchable fatal redeclaration once two files
+  declare into one process), and a duplicate version prefix (one shared `phinxlog`). All
+  three abort **every** extension, not just the offender — so the message names the file.
+  Keep the fixtures in `MigrationRunnerTest` well-formed apart from the one defect under
+  test: with two dirs on the same default version band, the version guard fires first and a
+  class-collision test passes without ever exercising the class guard. **Gated
   off when `DB_NAME` is empty (tests/boot) or `AUTO_MIGRATE=0`.** Base self-
   bootstrap tables (`app_setting`, `user_dashboard_layout`) still use their own
   `ensureSchema()` — move them to base migrations here when convenient.

@@ -3,7 +3,7 @@
   "description": "Base panel API kernel (PHP 8 + Slim). Composes extension Modules in-process via frontend-contract into one app — the backend twin of core-frontend.",
   "type": "project",
   "license": "proprietary",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "require": {
     "php": ">=8.1",
     "firebase/php-jwt": "^7.0",
@@ -33,20 +33,62 @@
     "phpunit/phpunit": "^10.5"
   },
   "repositories": [
-    { "type": "path", "url": "../tds-frontend-contract-pkg" },
-    { "type": "path", "url": "../tds-ext-time-tracker-pkg" },
-    { "type": "path", "url": "../tds-ext-lexware-pkg" },
-    { "type": "path", "url": "../tds-ext-live-chat-cta-pkg" },
-    { "type": "path", "url": "../tds-ext-customers-pkg" },
-    { "type": "path", "url": "../tds-ext-billing-pkg" },
-    { "type": "path", "url": "../tds-ext-tools-pkg" },
-    { "type": "path", "url": "../tds-ext-messages-pkg" },
-    { "type": "path", "url": "../tds-ext-projects-pkg" },
-    { "type": "path", "url": "../tds-ext-documents-pkg" },
-    { "type": "path", "url": "../tds-ext-support-tickets-pkg" },
-    { "type": "path", "url": "../tds-ext-contact-tickets-pkg" },
-    { "type": "path", "url": "../tds-ext-website-cms-pkg" },
-    { "type": "path", "url": "../tds-ext-blog-cms-pkg" }
+    {
+      "type": "path",
+      "url": "../tds-frontend-contract-pkg"
+    },
+    {
+      "type": "path",
+      "url": "../tds-ext-time-tracker-pkg"
+    },
+    {
+      "type": "path",
+      "url": "../tds-ext-lexware-pkg"
+    },
+    {
+      "type": "path",
+      "url": "../tds-ext-live-chat-cta-pkg"
+    },
+    {
+      "type": "path",
+      "url": "../tds-ext-customers-pkg"
+    },
+    {
+      "type": "path",
+      "url": "../tds-ext-billing-pkg"
+    },
+    {
+      "type": "path",
+      "url": "../tds-ext-tools-pkg"
+    },
+    {
+      "type": "path",
+      "url": "../tds-ext-messages-pkg"
+    },
+    {
+      "type": "path",
+      "url": "../tds-ext-projects-pkg"
+    },
+    {
+      "type": "path",
+      "url": "../tds-ext-documents-pkg"
+    },
+    {
+      "type": "path",
+      "url": "../tds-ext-support-tickets-pkg"
+    },
+    {
+      "type": "path",
+      "url": "../tds-ext-contact-tickets-pkg"
+    },
+    {
+      "type": "path",
+      "url": "../tds-ext-website-cms-pkg"
+    },
+    {
+      "type": "path",
+      "url": "../tds-ext-blog-cms-pkg"
+    }
   ],
   "autoload": {
     "psr-4": {

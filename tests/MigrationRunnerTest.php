@@ -26,19 +26,46 @@ final class MigrationRunnerTest extends TestCase
         self::rmrf($this->tmp);
     }
 
-    /** A migration dir with one file per class name. @param string[] $classes */
-    private function migDir(string $name, array $classes): string
+    /**
+     * A migration dir with one file per class name.
+     *
+     * File names are derived the way Phinx derives them back — `CreateShared`
+     * becomes `..._create_shared.php` — because the runner now enforces that
+     * round-trip. The old helper wrote `strtolower($class)`, which produces
+     * `createshared` and maps back to `Createshared`: every fixture would have
+     * tripped the new file-name guard, and the suite would have been testing
+     * the guard instead of the behaviour under it.
+     *
+     * @param string[] $classes
+     * @param int|null $startVersion Override to force a version collision.
+     */
+    private function migDir(string $name, array $classes, ?int $startVersion = null): string
     {
         $dir = $this->tmp . '/' . $name;
         mkdir($dir . '/db/migrations', 0775, true);
-        $ts = 20260719000000;
+        $ts = $startVersion ?? 20260719000000;
         foreach ($classes as $class) {
             file_put_contents(
-                $dir . '/db/migrations/' . (++$ts) . '_' . strtolower($class) . '.php',
+                $dir . '/db/migrations/' . (++$ts) . '_' . self::snake($class) . '.php',
                 "<?php\nfinal class {$class} {}\n",
             );
         }
         return $dir . '/db/migrations';
+    }
+
+    /** `CreateShared` → `create_shared` (the inverse of Phinx's derivation). */
+    private static function snake(string $class): string
+    {
+        return strtolower((string) preg_replace('/(?<!^)[A-Z]/', '_$0', $class));
+    }
+
+    /** Write one migration file verbatim, for the malformed-input cases. */
+    private function rawMigration(string $name, string $fileName, string $body): string
+    {
+        $dir = $this->tmp . '/' . $name . '/db/migrations';
+        mkdir($dir, 0775, true);
+        file_put_contents($dir . '/' . $fileName, $body);
+        return $dir;
     }
 
     private function stateDir(): string
@@ -94,8 +121,14 @@ final class MigrationRunnerTest extends TestCase
     public function testDuplicateClassNameAbortsWithoutMigrating(): void
     {
         $calls = 0;
+        // Distinct version bands on purpose: with the default the two dirs also
+        // collide on the version prefix, that guard fires first, and this test
+        // passes while asserting something it never exercised.
         $runner = new MigrationRunner(
-            [$this->migDir('a', ['CreateShared']), $this->migDir('b', ['CreateShared'])],
+            [
+                $this->migDir('a', ['CreateShared'], 20260725000000),
+                $this->migDir('b', ['CreateShared'], 20260726000000),
+            ],
             ['name' => 'x'],
             $this->stateDir(),
             null,
@@ -108,6 +141,82 @@ final class MigrationRunnerTest extends TestCase
 
         self::assertSame(0, $calls, 'a class-name collision must abort before Phinx includes the files');
         self::assertEmpty(glob($this->stateDir() . '/.migrated-*') ?: []);
+    }
+
+    public function testFileNameNotMatchingItsClassAbortsWithoutMigrating(): void
+    {
+        // THE defect this guard was extended for. Phinx derives the expected
+        // class from the file name and throws `Could not find class …` while the
+        // set is merely SCANNED — which aborts the run for every extension, so
+        // nothing migrates at all and every route 500s on a fresh database.
+        // tds-ext-live-chat-cta-pkg (5 files) and tds-ext-tools-pkg (2) shipped
+        // exactly this and had never applied a single migration.
+        $calls = 0;
+        $runner = new MigrationRunner(
+            [$this->rawMigration('a', '20260719000001_create_faq.php', "<?php\nfinal class CreateLiveChatCtaFaq {}\n")],
+            ['name' => 'x'],
+            $this->stateDir(),
+            null,
+            function () use (&$calls): array {
+                $calls++;
+                return [true, 'ok'];
+            },
+        );
+        $runner->ensureMigrated();
+
+        self::assertSame(0, $calls, 'a file-name/class mismatch must abort before Phinx scans the set');
+        self::assertEmpty(glob($this->stateDir() . '/.migrated-*') ?: []);
+    }
+
+    public function testDuplicateVersionPrefixAbortsWithoutMigrating(): void
+    {
+        // Distinct class names, same numeric prefix. Every extension shares ONE
+        // phinxlog, so Phinx aborts on the duplicate version even though nothing
+        // would fatally redeclare.
+        $calls = 0;
+        $runner = new MigrationRunner(
+            [
+                $this->migDir('a', ['CreateAlpha'], 20260801000000),
+                $this->migDir('b', ['CreateBeta'], 20260801000000),
+            ],
+            ['name' => 'x'],
+            $this->stateDir(),
+            null,
+            function () use (&$calls): array {
+                $calls++;
+                return [true, 'ok'];
+            },
+        );
+        $runner->ensureMigrated();
+
+        self::assertSame(0, $calls, 'a duplicate version prefix must abort — one shared phinxlog');
+        self::assertEmpty(glob($this->stateDir() . '/.migrated-*') ?: []);
+    }
+
+    public function testAWellFormedSetStillMigrates(): void
+    {
+        // The counterweight: three extensions, distinct classes, distinct
+        // versions, file names that map. A guard that rejects everything would
+        // pass all the tests above and take the whole platform down.
+        $calls = 0;
+        $runner = new MigrationRunner(
+            [
+                $this->migDir('a', ['CreateAlpha', 'AlphaAddColumn'], 20260725000000),
+                $this->migDir('b', ['CreateBeta'], 20260726000000),
+                $this->migDir('c', ['CreateGamma'], 20260727000000),
+            ],
+            ['name' => 'x'],
+            $this->stateDir(),
+            null,
+            function () use (&$calls): array {
+                $calls++;
+                return [true, 'ok'];
+            },
+        );
+        $runner->ensureMigrated();
+
+        self::assertSame(1, $calls);
+        self::assertNotEmpty(glob($this->stateDir() . '/.migrated-*') ?: []);
     }
 
     public function testFailureIsNotMarkedAndRetries(): void
