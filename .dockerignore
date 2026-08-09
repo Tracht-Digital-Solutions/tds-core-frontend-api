@@ -1,0 +1,30 @@
+# Keeps this repo lean when it is used as a Docker BUILD CONTEXT by
+# tds-gateway-api's Dockerfile (see its `additional_contexts`).
+#
+# Only the PHP half is consumed there: composer.json plus php/. The JS half and
+# the installed dependencies are pure transfer cost — without this file a single
+# extension shipped 150 MB+ of node_modules/vendor/.git into the build, and the
+# context transfer alone took longer than the rest of the image put together.
+#
+# Two entries are here for a sharper reason than size — both bake LOCAL STATE
+# into the image and make the container lie about itself:
+#
+#   .env  is a local dev secret. The container entrypoint sees it, logs
+#         "keeping existing .env" and skips writing the container defaults, so
+#         the service comes up pointed at a database that does not exist there.
+#   var/  is runtime state. It holds the in-process auto-migrator's
+#         `.migrated-<hash>` marker — copied in, the migrator believes a brand
+#         new, empty database is already migrated and silently skips every
+#         migration. The symptom is a service that boots green and then 500s on
+#         the first query with "Base table or view not found".
+.git
+node_modules
+vendor
+dist
+var
+.claude
+.astro
+.env
+.env.*
+!.env.example
+*.log
