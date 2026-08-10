@@ -175,6 +175,19 @@ make the updater deploy continuously.
 - **`Mailer`** (frontend-contract) — SMTP via Symfony Mailer when `MAIL_DSN` is set,
   else `NullMailer` (`isConfigured()` false). From identity is core-owned
   (`MAIL_FROM`/`MAIL_FROM_NAME`); no extension configures its own SMTP.
+  > **Keep `symfony/mailer` + `symfony/mime` on the same MAJOR as
+  > `tds-customer-api`.** In the gateway's in-process mode all services share one
+  > PHP process and Composer autoloaders are first-come-first-served per class
+  > name, so whichever service is dispatched first wins for every package they
+  > share — and the aggregate `/healthz` dispatches customer *before* frontend.
+  > This package used to require `^6.4` while customer resolved `^7.4`, i.e. the
+  > frontend's Symfony-6-era code was handed Symfony 7 classes at runtime
+  > (verified in the Docker stack: the frontend really does load
+  > `services/customer/vendor/symfony/mailer/Mailer.php`). Aligned to `^7.4`, so
+  > the difference is a patch level rather than a major. `symfony/mime` is now
+  > declared explicitly too — `Address`/`Email` are imported directly by
+  > `Service\SmtpMailer` and were only ever present as a transitive dependency.
+  > See tds-gateway-api#8 for the full divergence list.
 - **`UserContext`** (frontend-contract) — the request principal, populated by
   `AuthMiddleware` from the verified RS256 JWT (`Auth\JwksClient` against
   tds-auth-api's JWKS). Maps admin/uid + the multi-company claims + the
