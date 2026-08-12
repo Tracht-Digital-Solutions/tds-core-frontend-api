@@ -43,7 +43,12 @@ final class CorsMiddleware implements MiddlewareInterface
         }
 
         return $response
-            ->withHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+            // PATCH is not optional: the contact inbox triages with
+            // `PATCH /contact/messages/{id}`, and every panel call is
+            // cross-origin (static product host → api.tracht-digital.de). A
+            // method missing here fails at the preflight, i.e. the button does
+            // nothing and the network tab shows an OPTIONS, not the PATCH.
+            ->withHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS')
             ->withHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Act-As-Customer, X-Chat-Token')
             ->withHeader('Access-Control-Max-Age', '600');
     }

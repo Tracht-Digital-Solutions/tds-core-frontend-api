@@ -20,6 +20,7 @@ use Tds\CoreFrontendApi\Middleware\AuthMiddleware;
 use Tds\CoreFrontendApi\Middleware\CorsMiddleware;
 use Tds\CoreFrontendApi\Service\AutoUpdater;
 use Tds\CoreFrontendApi\Service\ModuleUpdateConfig;
+use Tds\CoreFrontendApi\Service\NotificationFeed;
 use Tds\CoreFrontendApi\Service\NullMailer;
 use Tds\CoreFrontendApi\Service\PackageRegistry;
 use Tds\CoreFrontendApi\Service\SettingsStore;
@@ -171,6 +172,32 @@ final class Bootstrap
             $container->get(DashboardLayoutRepository::class)->save((int) $user->userId(), $items);
             $response->getBody()->write(json_encode(['ok' => true, 'count' => count($items)], JSON_THROW_ON_ERROR));
             return $response->withHeader('Content-Type', 'application/json');
+        });
+
+        // --- Live notification feed (base service) ------------------------------
+        // The ONE endpoint the panel shell polls on every page. Each composed
+        // module implementing NotificationSource contributes its own events; the
+        // base only merges them and carries the per-module cursors.
+        //
+        // Why not per extension: the shell would then need one interval per
+        // module on every page. Why not SSE/WebSocket: the production host is
+        // PHP-FPM behind Plesk with no long-lived workers, so polling is the
+        // only option — which is also why this route must stay cheap.
+        $app->get('/me/notifications', function (Request $request, Response $response) use ($container, $registry): Response {
+            $user = $container->get(UserContext::class);
+            if (!$user->isAuthenticated()) {
+                $response->getBody()->write(json_encode(['error' => 'Unauthorized'], JSON_THROW_ON_ERROR));
+                return $response->withStatus(401)->withHeader('Content-Type', 'application/json');
+            }
+
+            $since = $request->getQueryParams()['since'] ?? null;
+            $feed = new NotificationFeed($registry->notificationSources());
+            $payload = $feed->collect($user, is_string($since) ? $since : null);
+
+            $response->getBody()->write(json_encode($payload, JSON_THROW_ON_ERROR));
+            return $response
+                ->withHeader('Content-Type', 'application/json')
+                ->withHeader('Cache-Control', 'no-store');
         });
 
         // --- Runtime settings (admin) ------------------------------------------
@@ -639,6 +666,12 @@ final class Bootstrap
     {
         $baseline = [
             'https://tracht-digital.de',
+            // The canonical landingpage is the apex, but a visitor who lands on
+            // `www.` would post the contact form from an origin that is not on
+            // this list — and a missing Access-Control-Allow-Origin is silent:
+            // the browser drops the response, the form shows its generic
+            // "try again later", and nothing is logged anywhere.
+            'https://www.tracht-digital.de',
             'https://blog.tracht-digital.de',
             'https://management.tracht-digital.de',
             'https://app.tracht-digital.de',

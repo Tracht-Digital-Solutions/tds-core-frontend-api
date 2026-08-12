@@ -78,6 +78,34 @@ lands with the assemble pipeline), so this base table **self-bootstraps**: an
 idempotent `CREATE TABLE IF NOT EXISTS` runs once per process. When the migrator
 lands, move that DDL into a base migration and drop `ensureSchema()`.
 
+## Live notification feed (`GET /me/notifications`)
+
+The single endpoint the panel shell polls on **every page**. Modules opt in by
+implementing the contract's `NotificationSource` (optional, 1.6.0+);
+`Service\NotificationFeed` merges them and `Support\NotificationCursor` carries
+the per-module cursors.
+
+- **One endpoint, not one per module.** A poller per extension island would be
+  thirteen intervals on every page. Joining the feed is a *backend* decision, so
+  a new module needs no frontend-host change at all.
+- **The cursor is an opaque base64url JSON map** of module id → that module's own
+  cursor. Per module, so a module enabled tomorrow is not handed a cursor that
+  belonged to another one — it gets its own first call.
+- **Every malformed cursor decodes to "first call"**, never a 4xx. The shell
+  cannot repair a cursor it did not author, so a 4xx would stall its poller
+  permanently; a first call costs the reader one poll of notifications.
+- **A first call yields the cursor and no items.** Enforced in the base rather
+  than trusted to each source, because the base is the only place that can see
+  whether a cursor arrived. Without it every freshly opened tab toasts the
+  backlog.
+- **A source that throws loses only its round** (no cursor recorded, so its next
+  poll is a first call). One broken module must not stop the shell polling.
+- Merged oldest-first and capped at `NotificationFeed::MAX_ITEMS` (20), keeping
+  the **newest** on overflow.
+
+Since it is polled by every open tab, keep the per-source query cheap — an
+indexed `id > cursor` read, not a scan.
+
 ## Module inventory + updates (`/admin/modules/*`)
 
 The backend of the panel's Module page. Three admin-only routes:
@@ -141,6 +169,18 @@ make the updater deploy continuously.
   it must be outermost) or OPTIONS preflights get 405'd and browsers block every
   cross-origin request. `tests/PreflightTest.php` guards this through the REAL
   Bootstrap app — never delete it.
+- **`Access-Control-Allow-Methods` must list every method a frontend uses.**
+  `PATCH` was missing for months and failed in the most confusing way available:
+  the preflight is rejected, so the browser never sends the request — the button
+  looks dead and the network tab shows an OPTIONS where you are looking for a
+  PATCH. The contact inbox's triage is a `PATCH`, and *every* panel call is
+  cross-origin (static product host → `api.tracht-digital.de`). `PreflightTest`
+  now asserts the whole method list, not just `OPTIONS`.
+- **The CORS baseline includes `www.tracht-digital.de`, not only the apex.** The
+  canonical landingpage is the apex, but a visitor arriving on `www.` posts the
+  contact form from an origin the browser will refuse the response for — and a
+  missing `Access-Control-Allow-Origin` is silent: the form shows its generic
+  "try again later" and nothing is logged.
 - **`env()` uses explicit `?? false` checks**, never
   `$_ENV[$k] ?? getenv($k) ?: $default` (`??` binds tighter than `?:`, clobbering
   "0"/""). See `Bootstrap::env()`.
@@ -257,8 +297,14 @@ after deploy.
 ## Tests
 
 ```bash
-composer test    # phpunit, 58 tests
+composer test    # phpunit, 98 tests (18 skip without TDS_TEST_DB_DSN)
 ```
+
+> **One TestCase per file, named after the file.** PHPUnit's directory loader
+> only picks up the class whose name matches the filename, so a second TestCase
+> living beside another one is **never run** — and reports green while doing it.
+> `NotificationCursorTest` and `NotificationRouteTest` are separate files for
+> exactly that reason.
 
 `tests/JwksClientTest.php` covers the kernel's **auth boundary**. Every composed
 module trusts `UserContext` and never re-verifies a token, so this class is the
