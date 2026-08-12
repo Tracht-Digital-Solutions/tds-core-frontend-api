@@ -87,12 +87,30 @@ final class Bootstrap
         }
 
         // --- Base kernel routes -------------------------------------------------
-        $app->get('/healthz', function (Request $request, Response $response) use ($registry): Response {
-            $response->getBody()->write(json_encode([
+        // Never 5xx's — the gateway's aggregate health relies on the 200 + JSON
+        // contract. `db` is part of that contract (see the gateway's
+        // Support\HealthBody): every backend self-reports `ok`/`no-schema`/`down`
+        // so a reachable-but-un-migrated service cannot look green. auth and
+        // customer always did; this service did not, so a frontend pointed at a
+        // dead database reported `{"ok":true,"status":200}` and the whole API
+        // looked healthy while every route 500'd.
+        $app->get('/healthz', function (Request $request, Response $response) use ($container, $registry): Response {
+            $payload = [
                 'status' => 'ok',
                 'modules' => $registry->order(),
-            ], JSON_THROW_ON_ERROR));
-            return $response->withHeader('Content-Type', 'application/json');
+            ];
+            // Only gate when a DB was actually configured. Booting with no DB is
+            // a supported state (local dev, first boot before the .env exists) —
+            // reporting `down` there would flip the whole gateway to 503 for a
+            // service that is behaving exactly as designed. Omitting the key
+            // means "nothing to gate on" to HealthBody::dbState().
+            if (self::env('DB_NAME', '') !== '') {
+                $payload['db'] = self::checkDb($container);
+            }
+            $response->getBody()->write(json_encode($payload, JSON_THROW_ON_ERROR));
+            return $response
+                ->withHeader('Content-Type', 'application/json')
+                ->withHeader('Cache-Control', 'no-store');
         });
 
         // Merged RBAC permission catalog contributed by all modules — the base
@@ -531,6 +549,42 @@ final class Bootstrap
      * (`AUTO_MIGRATE=0`); otherwise it applies pending migrations once per
      * deployed migration-set (see {@see MigrationRunner}).
      */
+    /**
+     * Two-stage DB probe for /healthz, mirroring tds-auth-api's HealthAction.
+     *
+     * A bare `SELECT 1` succeeds against an empty, never-migrated database, so
+     * it would report `ok` while every module route 500s on its missing tables.
+     * Probing `phinxlog` — the shared migration log the in-process
+     * MigrationRunner writes, and the same table the installer verifies against
+     * — distinguishes "reachable but never migrated" from "reachable + ready".
+     *
+     * Resolves PDO inside the try/catch: the container binds it lazily, so a
+     * bad DSN/credentials throws here rather than at boot, and this must report
+     * `down` with HTTP 200 instead of 5xx'ing (the never-5xx contract).
+     *
+     * @return 'ok'|'no-schema'|'down'
+     */
+    private static function checkDb(Container $container): string
+    {
+        try {
+            $pdo = $container->get(PDO::class);
+            $pdo->query('SELECT 1');
+        } catch (\Throwable) {
+            return 'down';
+        }
+
+        try {
+            $pdo->query('SELECT 1 FROM `phinxlog` LIMIT 1');
+            return 'ok';
+        } catch (\Throwable $e) {
+            // SQLSTATE 42S02 = base table not found, i.e. reachable but the
+            // migrations never ran.
+            $missingTable = ($e instanceof \PDOException && $e->getCode() === '42S02')
+                || str_contains($e->getMessage(), '42S02');
+            return $missingTable ? 'no-schema' : 'down';
+        }
+    }
+
     private static function autoMigrate(string $rootDir, ModuleRegistry $registry): void
     {
         if (self::env('DB_NAME', '') === '' || self::env('AUTO_MIGRATE', '1') === '0') {

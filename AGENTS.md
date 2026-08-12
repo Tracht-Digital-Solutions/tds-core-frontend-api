@@ -12,6 +12,21 @@ One PHP-FPM app, no service processes. The base ships the kernel routes
 (`/healthz`, `/admin/permissions`, `/wiki.json`, `/me/dashboard-layout`,
 `/admin/settings/{ns}`); it MUST boot with zero modules.
 
+> **`/healthz` must report `db` — the gateway gates on it.** The aggregate health
+> flips to 503 when a backend self-reports `db: "down"`/`"no-schema"`; a body
+> without the key means "nothing to gate on" (`Support\HealthBody` in the
+> gateway). This service shipped without it until 0.11.2, so a frontend pointed
+> at a dead or un-migrated database answered `{"ok":true,"status":200}` and the
+> whole API looked green while every module route 500'd. `checkDb()` mirrors
+> tds-auth-api's two-stage probe: `SELECT 1` for reachability, then
+> `SELECT 1 FROM phinxlog` for schema presence — a bare `SELECT 1` succeeds
+> against an empty database and would report `ok`. It resolves `PDO` inside the
+> try/catch (the container binds it lazily) so bad credentials report `down` with
+> HTTP 200 rather than 5xx'ing, and it is **skipped entirely when `DB_NAME` is
+> empty**, because booting without a DB is a supported state and reporting
+> `down` there would flip the whole gateway to 503 for a service behaving as
+> designed.
+
 `Modules::enabled()` currently composes **all 13** extensions (the union both
 products need) so this single backend serves both the admin and customer
 frontends: time-tracker, customers, billing, lexware, tools, messages, projects,
