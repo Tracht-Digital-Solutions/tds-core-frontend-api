@@ -175,6 +175,15 @@ make the updater deploy continuously.
 - **`Mailer`** (frontend-contract) — SMTP via Symfony Mailer when `MAIL_DSN` is set,
   else `NullMailer` (`isConfigured()` false). From identity is core-owned
   (`MAIL_FROM`/`MAIL_FROM_NAME`); no extension configures its own SMTP.
+  > **QUOTE any `.env` value containing a space — `MAIL_FROM_NAME` above all.**
+  > `createApp()` calls `Dotenv->load()` before anything else and phpdotenv
+  > rejects a bare unquoted spaced value, so `MAIL_FROM_NAME=Tracht Digital
+  > Solutions` does not merely break the mail identity — it kills the whole
+  > service at boot, surfacing as `"/frontend": {"status": 0}` in the gateway's
+  > `/healthz` and `500 Slim Application Error` on every route, with nothing in
+  > the app log (the failure precedes the error handler). This shipped in
+  > `.env.example` (fixed in 0.11.1) and in the gateway's `install.php` (fixed
+  > in tds-gateway-api 0.4.8), so **every fresh install had a dead frontend**.
   > **Keep `symfony/mailer` + `symfony/mime` on the same MAJOR as
   > `tds-customer-api`.** In the gateway's in-process mode all services share one
   > PHP process and Composer autoloaders are first-come-first-served per class
