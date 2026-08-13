@@ -12,6 +12,28 @@ One PHP-FPM app, no service processes. The base ships the kernel routes
 (`/healthz`, `/admin/permissions`, `/wiki.json`, `/me/dashboard-layout`,
 `/admin/settings/{ns}`); it MUST boot with zero modules.
 
+> **`/wiki.json` is the admin frontend's API reference, and it is a MERGE.**
+> The route list comes from introspecting Slim's `RouteCollector` after
+> composition, so it is complete by construction; the prose (summary, params,
+> responses, required permission) comes from each module's optional
+> `ApiDocSource`, joined on `"<METHOD> <pattern>"`. Built in
+> `Service\ApiReference`; the base's own routes are documented in
+> `docs/api.php`, since the base is not a `Module`.
+> - **Grouping is ownership, not the path.** `ModuleRegistry::routeOwners()`
+>   records who mounted what during composition. Before that existed the page
+>   grouped by first path segment, which put all thirteen modules' `/admin/*`
+>   routes in one bucket called `admin` — the single thing that made it useless
+>   as a reference.
+> - **An undocumented route still appears** (`documented: false`), and a doc
+>   entry whose route no longer exists lands in `stats.orphan_docs` instead of
+>   being dropped. `tests/ApiReferenceTest.php` asserts both directions across
+>   every composed module, so a renamed path fails the suite.
+> - **`vendor/` holds COPIES of the extensions** (Composer mirrors path repos).
+>   Editing a sibling `tds-ext-*-pkg` does not change what this service composes
+>   until Composer copies it again — re-run `composer update` for that package,
+>   or the local test here will keep asserting the old routes. CI is unaffected:
+>   the gateway's `_assemble.yml` mirrors from fresh `main` checkouts.
+
 > **`/healthz` must report `db` — the gateway gates on it.** The aggregate health
 > flips to 503 when a backend self-reports `db: "down"`/`"no-schema"`; a body
 > without the key means "nothing to gate on" (`Support\HealthBody` in the

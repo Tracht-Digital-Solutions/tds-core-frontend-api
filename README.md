@@ -35,7 +35,9 @@ paths without it).
 **Composes all 12 extensions and is deployed via the gateway** (cut over 2026-07-22).
 `Modules::enabled()` returns the union both products need — time-tracker, customers,
 billing, lexware, tools, messages, projects, documents, support-tickets, contact-tickets,
-website-cms, blog-cms. Ported and live: RS256 JWT/JWKS verify, the wiki (`/wiki.json`),
+website-cms, blog-cms. Ported and live: RS256 JWT/JWKS verify, the admin API
+reference (`/wiki.json` — introspected routes joined with each module's `ApiDocSource`
+prose, grouped by the module that mounted them),
 email (`Mailer`), the in-process auto-migrator, the runtime settings store, per-user
 dashboard layout, and the **public content-delivery read surface** (`/content/blog*`,
 `/content/topics`, `/content/snippets`, `/content/landing`) the public blog/landingpage
