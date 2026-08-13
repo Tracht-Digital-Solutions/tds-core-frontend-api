@@ -81,6 +81,78 @@ final class AuthMiddlewareTest extends TestCase
         self::assertFalse($container->get(UserContext::class)->isAuthenticated());
     }
 
+    /**
+     * The act-as header decides which tenant a request reads and writes, so
+     * both spellings have to work while the rename settles: the panel and the
+     * thirteen extensions ship independently of this service, and a build still
+     * sending the old name would otherwise fall back to "no company" — every
+     * scoped list empty, no error anywhere.
+     */
+    public function testAcceptsEitherActAsHeaderSpelling(): void
+    {
+        foreach (['X-Act-As-Company', 'X-Act-As-Customer'] as $header) {
+            $container = new Container();
+            $container->set(UserContext::class, static fn () => new AnonymousUserContext());
+
+            $verifier = new class implements TokenVerifier {
+                public function verify(string $jwt): array
+                {
+                    return [
+                        'admin' => false,
+                        'uid' => 1,
+                        'companies' => [
+                            ['id' => 3, 'permissions' => []],
+                            ['id' => 9, 'permissions' => []],
+                        ],
+                    ];
+                }
+            };
+
+            $request = (new ServerRequestFactory())
+                ->createServerRequest('GET', '/x')
+                ->withHeader('Authorization', 'Bearer whatever')
+                ->withHeader($header, '9');
+
+            (new AuthMiddleware($container, $verifier))->process($request, $this->passThrough());
+
+            self::assertSame(
+                9,
+                $container->get(UserContext::class)->activeCompanyId(),
+                "{$header} was ignored",
+            );
+        }
+    }
+
+    public function testPrefersTheCurrentHeaderWhenBothAreSent(): void
+    {
+        $container = new Container();
+        $container->set(UserContext::class, static fn () => new AnonymousUserContext());
+
+        $verifier = new class implements TokenVerifier {
+            public function verify(string $jwt): array
+            {
+                return [
+                    'admin' => false,
+                    'uid' => 1,
+                    'companies' => [
+                        ['id' => 3, 'permissions' => []],
+                        ['id' => 9, 'permissions' => []],
+                    ],
+                ];
+            }
+        };
+
+        $request = (new ServerRequestFactory())
+            ->createServerRequest('GET', '/x')
+            ->withHeader('Authorization', 'Bearer whatever')
+            ->withHeader('X-Act-As-Company', '9')
+            ->withHeader('X-Act-As-Customer', '3');
+
+        (new AuthMiddleware($container, $verifier))->process($request, $this->passThrough());
+
+        self::assertSame(9, $container->get(UserContext::class)->activeCompanyId());
+    }
+
     private function passThrough(): RequestHandlerInterface
     {
         return new class implements RequestHandlerInterface {

@@ -30,7 +30,16 @@ use Tds\Frontend\Contract\UserContext;
 final class AuthMiddleware implements MiddlewareInterface
 {
     public const COOKIE_NAME = 'tds_session';
-    private const ACT_AS_HEADER = 'X-Act-As-Customer';
+    /**
+     * The "act as this company" header, current spelling first.
+     *
+     * Both are read for one release: the panel and the extensions ship
+     * independently of this service, so a build that still sends the old name
+     * must keep working — otherwise an admin's company view silently falls back
+     * to "no company" and every scoped list comes back empty, with no error
+     * anywhere. Drop `X-Act-As-Customer` together with the rest of the aliases.
+     */
+    private const ACT_AS_HEADERS = ['X-Act-As-Company', 'X-Act-As-Customer'];
 
     public function __construct(
         private readonly Container $container,
@@ -46,7 +55,7 @@ final class AuthMiddleware implements MiddlewareInterface
         if ($token !== null && $this->verifier !== null) {
             try {
                 $claims = $this->verifier->verify($token);
-                $context = new JwtUserContext($claims, $request->getHeaderLine(self::ACT_AS_HEADER));
+                $context = new JwtUserContext($claims, self::actAs($request));
             } catch (\Throwable) {
                 // Invalid/expired token → stay anonymous (routes decide the 401).
             }
@@ -54,6 +63,19 @@ final class AuthMiddleware implements MiddlewareInterface
 
         $this->container->set(UserContext::class, $context);
         return $handler->handle($request);
+    }
+
+    /** The first act-as header that carries a value, current spelling first. */
+    private static function actAs(ServerRequestInterface $request): string
+    {
+        foreach (self::ACT_AS_HEADERS as $header) {
+            $value = trim($request->getHeaderLine($header));
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        return '';
     }
 
     private function extractToken(ServerRequestInterface $request): ?string

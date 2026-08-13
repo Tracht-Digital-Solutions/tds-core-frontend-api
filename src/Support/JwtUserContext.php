@@ -14,7 +14,8 @@ use Tds\Frontend\Contract\UserContext;
  * - `uid`/`sub` → the app_user id.
  * - Multi-company: the `companies` claim (`[{id, permissions}]`) + the header
  *   pick the active company and its permission set; falls back to the flat
- *   `customer_id`/`permissions` claims for pre-multi-company tokens. An admin
+ *   `company_id`/`permissions` claims for pre-multi-company tokens (the old
+ *   `customer_id` spelling is still accepted for one release). An admin
  *   may act as any customer via the header (the Admin-Ansicht).
  *
  * Also implements the contract's optional {@see MultiCompanyContext}, which
@@ -67,7 +68,7 @@ final class JwtUserContext implements UserContext, MultiCompanyContext
      * {@inheritDoc}
      *
      * In token order, so the first entry is the primary/default company —
-     * which is what `app_user.customer_id` denormalises on the auth side.
+     * which is what `app_user.company_id` denormalises on the auth side.
      */
     public function companyIds(): array
     {
@@ -146,13 +147,37 @@ final class JwtUserContext implements UserContext, MultiCompanyContext
     }
 
     /**
+     * The flat company claim, in either spelling.
+     *
+     * tds-auth-api renamed `customer_id` → `company_id` and emits BOTH for one
+     * release. A token minted before the rename carries only the old name and
+     * stays valid for up to an hour, so reading only the new one would strip a
+     * portal user of their tenant the moment this service deployed — and this
+     * service and auth-api do not deploy at the same instant. Drop the fallback
+     * together with auth-api's alias.
+     *
+     * @param array<string, mixed> $claims
+     */
+    private static function flatCompanyId(array $claims): ?int
+    {
+        foreach (['company_id', 'customer_id'] as $key) {
+            $value = $claims[$key] ?? null;
+            if (is_int($value)) {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * @param array<string, mixed> $claims
      * @param list<array{id: int, permissions: string[]}> $companies
      */
     private static function resolveCompany(array $claims, array $companies, string $header): ?int
     {
         $allowed = array_map(static fn (array $c): int => $c['id'], $companies);
-        $cid = $claims['customer_id'] ?? null;
+        $cid = self::flatCompanyId($claims);
         if ($allowed === [] && is_int($cid) && $cid > 0) {
             $allowed[] = $cid;
         }

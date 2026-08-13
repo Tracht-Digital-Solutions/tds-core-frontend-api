@@ -49,7 +49,11 @@ final class CorsMiddleware implements MiddlewareInterface
             // method missing here fails at the preflight, i.e. the button does
             // nothing and the network tab shows an OPTIONS, not the PATCH.
             ->withHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS')
-            ->withHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Act-As-Customer, X-Chat-Token')
+            // `X-Act-As-Company` is the current spelling; the old one stays for
+            // one release. A header missing from this list fails the PREFLIGHT,
+            // so the request is never sent at all — the control just looks dead,
+            // with an OPTIONS where you are looking for the real call.
+            ->withHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Act-As-Company, X-Act-As-Customer, X-Chat-Token')
             ->withHeader('Access-Control-Max-Age', '600');
     }
 }

@@ -397,3 +397,26 @@ verification altogether.
 ## After a change
 
 Bump `version` in `composer.json`, update this file + README, commit together.
+
+## The `customer` → `company` rename (dual-accept, 0.14.0)
+
+tds-auth-api renamed its schema and its permission ids in 0.6.0. This service
+**reads both spellings for one release**, in two places:
+
+- **The flat claim** — `JwtUserContext::flatCompanyId()` prefers `company_id`
+  and falls back to `customer_id`.
+- **The act-as header** — `AuthMiddleware::ACT_AS_HEADERS` prefers
+  `X-Act-As-Company` and falls back to `X-Act-As-Customer`. Both are in the CORS
+  `Allow-Headers`, because a header missing from that list fails the
+  **preflight**: the request is never sent, and all you see is an OPTIONS where
+  you expected the real call.
+
+Neither is politeness. A token minted five minutes before the deploy carries the
+old claim for up to an hour, the panel and the thirteen extensions ship
+independently of this service, and none of them deploy at the same instant.
+Reading only the new names would silently drop a portal user's tenant — every
+scoped list comes back empty, with no error anywhere to explain it.
+
+**Delete both fallbacks together with auth-api's aliases** in the follow-up
+release. Leaving them means the old names work forever and the rename bought
+nothing.

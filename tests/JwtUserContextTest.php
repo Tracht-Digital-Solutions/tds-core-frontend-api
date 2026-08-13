@@ -69,4 +69,60 @@ final class JwtUserContextTest extends TestCase
         self::assertSame(3, $ctx->activeCompanyId());
         self::assertTrue($ctx->has('documents:read'));
     }
+
+    // --- the customer → company rename, both spellings for one release ------
+
+    public function testReadsTheNewCompanyIdClaim(): void
+    {
+        $ctx = new JwtUserContext(['admin' => false, 'company_id' => 3], '');
+
+        self::assertSame(3, $ctx->activeCompanyId());
+    }
+
+    public function testStillReadsTheOldCustomerIdClaim(): void
+    {
+        // A token minted before the rename stays valid for up to an hour, and
+        // this service does not deploy at the same instant as auth-api. Reading
+        // only the new name would silently strip a portal user of their tenant
+        // — every scoped list comes back empty with no error anywhere.
+        $ctx = new JwtUserContext(['admin' => false, 'customer_id' => 3], '');
+
+        self::assertSame(3, $ctx->activeCompanyId());
+    }
+
+    public function testPrefersTheNewClaimWhenBothArePresent(): void
+    {
+        // auth-api emits both during the transition; they agree, but the
+        // current spelling is the one to trust.
+        $ctx = new JwtUserContext(
+            ['admin' => false, 'company_id' => 3, 'customer_id' => 9],
+            '',
+        );
+
+        self::assertSame(3, $ctx->activeCompanyId());
+    }
+
+    public function testExposesTheFullMembershipListForTheSwitcher(): void
+    {
+        $ctx = new JwtUserContext([
+            'admin' => false,
+            'companies' => [
+                ['id' => 3, 'permissions' => []],
+                ['id' => 9, 'permissions' => []],
+            ],
+        ], '');
+
+        self::assertSame([3, 9], $ctx->companyIds());
+    }
+
+    public function testAnAdminReportsNoMemberships(): void
+    {
+        // Their reach is "any company", which is not belonging to one —
+        // returning every company here would turn a convenience accessor into
+        // an unbounded directory read.
+        $ctx = new JwtUserContext(['admin' => true, 'companies' => []], '7');
+
+        self::assertSame([], $ctx->companyIds());
+        self::assertSame(7, $ctx->activeCompanyId(), 'but may still act as one');
+    }
 }
