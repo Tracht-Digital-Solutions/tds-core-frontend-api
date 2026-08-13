@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Tds\CoreFrontendApi\Support;
 
+use Tds\Frontend\Contract\MultiCompanyContext;
 use Tds\Frontend\Contract\UserContext;
 
 /**
@@ -15,8 +16,13 @@ use Tds\Frontend\Contract\UserContext;
  *   pick the active company and its permission set; falls back to the flat
  *   `customer_id`/`permissions` claims for pre-multi-company tokens. An admin
  *   may act as any customer via the header (the Admin-Ansicht).
+ *
+ * Also implements the contract's optional {@see MultiCompanyContext}, which
+ * exposes the FULL membership list rather than just the active company — the
+ * profile menu needs it to name the user's company, and the company switcher
+ * will need it to offer the alternatives.
  */
-final class JwtUserContext implements UserContext
+final class JwtUserContext implements UserContext, MultiCompanyContext
 {
     private readonly bool $admin;
     private readonly ?int $userId;
@@ -24,6 +30,8 @@ final class JwtUserContext implements UserContext
     private readonly ?int $activeCompanyId;
     /** @var string[] */
     private readonly array $permissionList;
+    /** @var list<int> */
+    private readonly array $companyIdList;
 
     /** @param array<string, mixed> $claims */
     public function __construct(array $claims, string $actAsHeader)
@@ -41,10 +49,29 @@ final class JwtUserContext implements UserContext
             // Admin: acts as whatever company the header names (or none).
             $this->activeCompanyId = self::headerId($actAsHeader);
             $this->permissionList = [];
+            // Deliberately empty, not "all companies": an admin's reach is
+            // "any company", which is not the same as belonging to one. The
+            // token carries no memberships for an admin either.
+            $this->companyIdList = [];
         } else {
             $this->activeCompanyId = self::resolveCompany($claims, $companies, $actAsHeader);
             $this->permissionList = self::permissionsFor($claims, $companies, $this->activeCompanyId);
+            $this->companyIdList = array_values(array_map(
+                static fn (array $c): int => (int) $c['id'],
+                $companies,
+            ));
         }
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * In token order, so the first entry is the primary/default company —
+     * which is what `app_user.customer_id` denormalises on the auth side.
+     */
+    public function companyIds(): array
+    {
+        return $this->companyIdList;
     }
 
     public function isAuthenticated(): bool

@@ -16,6 +16,8 @@ use Symfony\Component\Mailer\Transport;
 use Tds\CoreFrontendApi\Auth\JwksClient;
 use Tds\CoreFrontendApi\Auth\TokenVerifier;
 use Tds\CoreFrontendApi\Domain\DashboardLayoutRepository;
+use Tds\CoreFrontendApi\Domain\UserPreferenceRepository;
+use Tds\CoreFrontendApi\Support\PreferenceWhitelist;
 use Tds\CoreFrontendApi\Middleware\AuthMiddleware;
 use Tds\CoreFrontendApi\Middleware\CorsMiddleware;
 use Tds\CoreFrontendApi\Service\ApiReference;
@@ -173,6 +175,55 @@ final class Bootstrap
             $container->get(DashboardLayoutRepository::class)->save((int) $user->userId(), $items);
             $response->getBody()->write(json_encode(['ok' => true, 'count' => count($items)], JSON_THROW_ON_ERROR));
             return $response->withHeader('Content-Type', 'application/json');
+        });
+
+        // --- Per-user interface preferences (base service) ----------------------
+        // Theme, locale and notification toggles, keyed by the JWT user id. The
+        // panel already caches the theme in localStorage (the no-flash bootstrap
+        // reads it before paint); this is what makes the choice follow the USER
+        // to another device instead of living per browser.
+        //
+        // Everything here is best-effort on the client: the frontend service may
+        // legitimately have no database yet (`services/frontend/.env` is still an
+        // open go-live step), so a failing GET must leave the panel working off
+        // localStorage rather than blocking it.
+        $app->get('/me/preferences', function (Request $request, Response $response) use ($container): Response {
+            $user = $container->get(UserContext::class);
+            if (!$user->isAuthenticated() || $user->userId() === null) {
+                $response->getBody()->write(json_encode(['error' => 'Unauthorized'], JSON_THROW_ON_ERROR));
+                return $response->withStatus(401)->withHeader('Content-Type', 'application/json');
+            }
+            $prefs = $container->get(UserPreferenceRepository::class)->all((int) $user->userId());
+            $response->getBody()->write(json_encode(['preferences' => $prefs], JSON_THROW_ON_ERROR));
+            return $response
+                ->withHeader('Content-Type', 'application/json')
+                // Per-user state behind a shared gateway — never let an
+                // intermediary hand one user's theme to the next.
+                ->withHeader('Cache-Control', 'no-store');
+        });
+
+        $app->put('/me/preferences', function (Request $request, Response $response) use ($container): Response {
+            $user = $container->get(UserContext::class);
+            if (!$user->isAuthenticated() || $user->userId() === null) {
+                $response->getBody()->write(json_encode(['error' => 'Unauthorized'], JSON_THROW_ON_ERROR));
+                return $response->withStatus(401)->withHeader('Content-Type', 'application/json');
+            }
+            $body = (array) $request->getParsedBody();
+            $raw = $body['preferences'] ?? null;
+            if (!is_array($raw)) {
+                $response->getBody()->write(json_encode(['error' => 'preferences (object) is required'], JSON_THROW_ON_ERROR));
+                return $response->withStatus(422)->withHeader('Content-Type', 'application/json');
+            }
+
+            // A PARTIAL write of a closed whitelist — see PreferenceWhitelist
+            // for why unknown keys are dropped rather than rejected.
+            $accepted = PreferenceWhitelist::filter($raw);
+
+            $container->get(UserPreferenceRepository::class)->setMany((int) $user->userId(), $accepted);
+            $response->getBody()->write(json_encode(['ok' => true, 'saved' => array_keys($accepted)], JSON_THROW_ON_ERROR));
+            return $response
+                ->withHeader('Content-Type', 'application/json')
+                ->withHeader('Cache-Control', 'no-store');
         });
 
         // --- Live notification feed (base service) ------------------------------
@@ -513,6 +564,12 @@ final class Bootstrap
         // Base-service per-user dashboard layout store (lazy — no DB on boot).
         $container->set(DashboardLayoutRepository::class, static fn ($c): DashboardLayoutRepository =>
             new DashboardLayoutRepository($c->get(PDO::class)));
+
+        // Base-service per-user interface preferences (theme/locale/notifications).
+        // Lazy for the same reason: PDO must not be constructed at boot, or the
+        // service cannot start on a host whose DB config is not in place yet.
+        $container->set(UserPreferenceRepository::class, static fn ($c): UserPreferenceRepository =>
+            new UserPreferenceRepository($c->get(PDO::class)));
 
         // Runtime settings store (namespaced key/value; secrets AES-256-GCM at
         // rest under SETTINGS_ENCRYPTION_KEY). Bound by the CONTRACT interface key

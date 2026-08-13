@@ -9,7 +9,7 @@ In-process composition, like the gateway: `Modules::enabled()` returns the
 extension `Module`s for this build; `Bootstrap` composes them through a
 `ModuleRegistry` (dependency-ordered, collision-checked) and mounts their routes.
 One PHP-FPM app, no service processes. The base ships the kernel routes
-(`/healthz`, `/admin/permissions`, `/wiki.json`, `/me/dashboard-layout`,
+(`/healthz`, `/admin/permissions`, `/wiki.json`, `/me/dashboard-layout`, `/me/preferences`,
 `/admin/settings/{ns}`); it MUST boot with zero modules.
 
 > **`/wiki.json` is the admin frontend's API reference, and it is a MERGE.**
@@ -87,6 +87,41 @@ coded default. **Secrets are AES-256-GCM-encrypted at rest** under
 extension adopts it by resolving `SettingsStore` from the container (or reading the
 shared `app_setting` table via the core PDO); the DeepL/rebuild env vars stay the
 fallback.
+
+## Base-service data (per-user preferences)
+
+`GET`/`PUT /me/preferences` hold each authenticated user's **theme, locale and
+notification toggles**, keyed by the JWT `userId`. `Domain\UserPreferenceRepository`
+owns the `user_preference` table (`user_id`×`pkey`), self-bootstrapping exactly
+like the dashboard layout below.
+
+- **Why this exists at all:** the theme lived only in `localStorage`, i.e. per
+  browser. That stays — it is the pre-paint cache the no-flash bootstrap reads
+  before anything renders — but the server is now the copy that follows the
+  choice to another **device**. Reconciling the two is the frontend host's job.
+- **Key/value rows, not columns.** A column per preference means a migration
+  per preference, and the core has no migrator — the self-bootstrapping DDL
+  cannot `ALTER` an existing table. Rows also make an unknown key (a newer
+  panel against an older backend) inert rather than fatal.
+- **`Support\PreferenceWhitelist` owns the rule, not the route.** A closed key
+  AND value set: these land in `<html data-theme>` / `<html lang>`, and an open
+  string column feeding a DOM attribute only looks harmless until it is
+  rendered somewhere else. It is a separate class because inside the route
+  closure it could only be exercised with a live token and a database — which
+  is how filtering logic ends up untested. `theme` mirrors tds-shared's
+  `THEME_PREFERENCES` and **includes `"system"`**: the browser stores "follow
+  the OS" as the *absence* of a value, but the server must hold it as a real
+  choice or it cannot be told apart from "never chose".
+- **PUT is a PARTIAL write** — keys not sent are left alone, so the Darstellung
+  tab saving a theme cannot clear notification toggles it never rendered.
+  Unknown keys and invalid values are dropped silently (same convention as the
+  dashboard layout); JSON booleans are normalised first, because `(string) false`
+  is `""` and would silently turn "switch this off" into "change nothing".
+- **Both responses are `Cache-Control: no-store`** — per-user state behind a
+  shared gateway must never be handed to the next caller.
+- **Best-effort on the client.** `services/frontend/.env` is still an open
+  go-live step, so a failing GET has to leave the panel working off
+  `localStorage` rather than blocking it.
 
 ## Base-service data (per-user dashboard layout)
 
@@ -240,7 +275,7 @@ make the updater deploy continuously.
   test: with two dirs on the same default version band, the version guard fires first and a
   class-collision test passes without ever exercising the class guard. **Gated
   off when `DB_NAME` is empty (tests/boot) or `AUTO_MIGRATE=0`.** Base self-
-  bootstrap tables (`app_setting`, `user_dashboard_layout`) still use their own
+  bootstrap tables (`app_setting`, `user_dashboard_layout`, `user_preference`) still use their own
   `ensureSchema()` — move them to base migrations here when convenient.
 - **`php -S` needs `public/router.php`** (built-in server 404s dotted paths).
 

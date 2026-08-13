@@ -91,6 +91,53 @@ return [
     ],
     [
         'method' => 'GET',
+        'pattern' => '/me/preferences',
+        'tag' => 'Eigenes Konto',
+        'summary' => 'Oberflächen-Einstellungen des angemeldeten Nutzers lesen',
+        'description' => 'Theme, Sprache und Benachrichtigungs-Schalter, pro Nutzer '
+            . 'gespeichert (Schlüssel ist die User-Id aus dem JWT), kein Admin-Gate. '
+            . 'Das Panel hält das Theme zusätzlich im `localStorage` — das ist der '
+            . 'Pre-Paint-Cache, den das No-Flash-Bootstrap vor dem ersten Rendern liest; '
+            . 'diese Route ist die Quelle, die der Wahl über **Geräte hinweg** folgt. '
+            . 'Antwortet `no-store`: Nutzer-spezifischer Zustand hinter einem geteilten '
+            . 'Gateway darf nie zwischengespeichert werden.',
+        'auth' => 'session',
+        'responses' => [
+            ['status' => 200, 'description' => '`{preferences: {theme?, locale?, notify_toast?, notify_email?}}`'],
+            ['status' => 401, 'description' => 'Keine oder ungültige Sitzung.'],
+        ],
+    ],
+    [
+        'method' => 'PUT',
+        'pattern' => '/me/preferences',
+        'tag' => 'Eigenes Konto',
+        'summary' => 'Oberflächen-Einstellungen des angemeldeten Nutzers speichern',
+        'description' => '**Teil-Schreibvorgang**: nicht genannte Schlüssel bleiben stehen, '
+            . 'damit der Tab „Darstellung" beim Speichern des Themes nicht die '
+            . 'Benachrichtigungs-Schalter löscht, die er nie angezeigt hat. Schlüssel und '
+            . 'Werte laufen gegen eine geschlossene Whitelist (`theme`: `light|dark|system`, '
+            . '`locale`: `de|en`, `notify_toast`/`notify_email`: `0|1`); Unbekanntes wird '
+            . 'still verworfen statt die Anfrage abzulehnen — dieselbe Konvention wie beim '
+            . 'Dashboard-Layout, damit ein neueres Panel gegen ein älteres Backend nicht '
+            . 'den ganzen Speichervorgang verliert.',
+        'auth' => 'session',
+        'params' => [
+            [
+                'in' => 'body',
+                'name' => 'preferences',
+                'type' => 'object',
+                'required' => true,
+                'description' => 'Objekt aus erlaubten Schlüssel/Wert-Paaren.',
+            ],
+        ],
+        'responses' => [
+            ['status' => 200, 'description' => '`{ok: true, saved: [<übernommene Schlüssel>]}`'],
+            ['status' => 401, 'description' => 'Keine oder ungültige Sitzung.'],
+            ['status' => 422, 'description' => '`preferences` fehlt oder ist kein Objekt.'],
+        ],
+    ],
+    [
+        'method' => 'GET',
         'pattern' => '/me/notifications',
         'tag' => 'Eigenes Konto',
         'summary' => 'Zusammengeführter Benachrichtigungs-Feed aller Module',
