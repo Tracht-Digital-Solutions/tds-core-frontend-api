@@ -86,7 +86,8 @@ coded default. **Secrets are AES-256-GCM-encrypted at rest** under
 (`blog-cms`, `website-cms`, …) so keys don't collide in the shared table. An
 extension adopts it by resolving `SettingsStore` from the container (or reading the
 shared `app_setting` table via the core PDO); the DeepL/rebuild env vars stay the
-fallback.
+fallback. The **base itself** uses two namespaces: `modules` (Module & Deployment)
+and `mail` (SMTP, see *Core services for modules*).
 
 ## Base-service data (per-user preferences)
 
@@ -284,9 +285,34 @@ make the updater deploy continuously.
 `Bootstrap::container()` binds the services extensions resolve via
 `$app->getContainer()->get(...)` — all lazy (boot does no DB/SMTP work):
 - **`PDO`** — the shared DB connection (env `DB_*`).
-- **`Mailer`** (frontend-contract) — SMTP via Symfony Mailer when `MAIL_DSN` is set,
-  else `NullMailer` (`isConfigured()` false). From identity is core-owned
-  (`MAIL_FROM`/`MAIL_FROM_NAME`); no extension configures its own SMTP.
+- **`Mailer`** (frontend-contract) — SMTP via Symfony Mailer, configured
+  **DB-first with `MAIL_DSN` as the env fallback** (`Service\MailConfig`,
+  settings namespace `mail`); nothing configured → `NullMailer`
+  (`isConfigured()` false). From identity is core-owned
+  (`MAIL_FROM`/`MAIL_FROM_NAME`, overridable per host in the store); no
+  extension configures its own SMTP.
+  > **The stored configuration BEATS `MAIL_DSN`, and that direction is the
+  > point (0.15.0).** Until then the mailer was `MAIL_DSN`-only — editable
+  > exclusively by hand on the production host — so every notification toggle
+  > in the panel switched on a mailer nobody could set up from the panel, and
+  > "E-Mail-Benachrichtigungen" silently no-opped on a host whose `.env`
+  > predated the feature. Env-first would have kept exactly that: an `.env`
+  > written once at install time would permanently shadow the form.
+  > Admins configure it under Einstellungen → *E-Mail (SMTP)* (admin product
+  > only), which writes `host`/`port`/`security`/`user`/`password`/`from_email`/
+  > `from_name` (plus a raw `dsn` escape hatch for transports the form cannot
+  > express) through the generic `PUT /admin/settings/mail`.
+  > Two routes exist beside it because the generic settings route cannot answer
+  > either question: **`GET /admin/mail`** reports the *effective* config
+  > (`source: db|env|none`) so an admin does not "fix" a host that mails fine
+  > through its `.env`, and **`POST /admin/mail/test`** sends a test mail —
+  > SMTP fails in ways a form cannot validate (wrong port, refused relay, bad
+  > credentials), and the modules that send do so on events an admin cannot
+  > trigger at will. Neither route returns a secret, and an SMTP error is run
+  > through `MailConfig::redact()` first because Symfony echoes the DSN — with
+  > the password in it — in some failures.
+  > A malformed stored DSN degrades to `NullMailer` rather than throwing:
+  > resolving the mailer must never 500 an unrelated route.
   > **QUOTE any `.env` value containing a space — `MAIL_FROM_NAME` above all.**
   > `createApp()` calls `Dotenv->load()` before anything else and phpdotenv
   > rejects a bare unquoted spaced value, so `MAIL_FROM_NAME=Tracht Digital

@@ -217,6 +217,57 @@ return [
         ],
     ],
     [
+        'method' => 'GET',
+        'pattern' => '/admin/mail',
+        'tag' => 'Einstellungen',
+        'summary' => 'Effektive SMTP-Konfiguration lesen',
+        'description' => 'Was **tatsächlich** verschickt, nicht nur was gespeichert ist: '
+            . '`source` sagt, ob die Datenbank (`db`), die `MAIL_DSN` aus der Umgebung '
+            . '(`env`) oder nichts (`none`) den Transport stellt. Enthält bewusst kein '
+            . 'Geheimnis — nur `password_configured`, weil der DSN das SMTP-Passwort '
+            . 'einbetten kann.',
+        'auth' => 'admin',
+        'responses' => [
+            [
+                'status' => 200,
+                'description' => '`{configured, source, host, port, security, user, '
+                    . 'password_configured, from_email, from_name}`',
+                'example' => '{"configured":true,"source":"db","host":"smtp.example.net","port":587,'
+                    . '"security":"tls","user":"noreply@example.net","password_configured":true,'
+                    . '"from_email":"no-reply@tracht-digital.de","from_name":"Tracht Digital Solutions"}',
+            ],
+            ['status' => 401, 'description' => 'Keine Sitzung.'],
+            ['status' => 403, 'description' => 'Angemeldet, aber kein Admin.'],
+        ],
+    ],
+    [
+        'method' => 'POST',
+        'pattern' => '/admin/mail/test',
+        'tag' => 'Einstellungen',
+        'summary' => 'Testmail über die aktuelle SMTP-Konfiguration senden',
+        'description' => 'Ohne `to` geht die Mail an die Adresse der angemeldeten Administration. '
+            . 'SMTP scheitert an Dingen, die ein Formular nicht prüfen kann (falscher Port, '
+            . 'verweigertes Relay, falsche Zugangsdaten) — „gespeichert" ist deshalb nicht '
+            . 'dasselbe wie „verschickt". Fehlermeldungen des Servers werden durchgereicht, '
+            . 'Zugangsdaten darin vorher entfernt.',
+        'auth' => 'admin',
+        'params' => [
+            [
+                'in' => 'body',
+                'name' => 'to',
+                'type' => 'string',
+                'description' => 'Empfänger. Weglassen = eigene Adresse aus der Sitzung.',
+            ],
+        ],
+        'responses' => [
+            ['status' => 200, 'description' => '`{ok: true, to}` — die Mail wurde dem SMTP-Server übergeben.'],
+            ['status' => 401, 'description' => 'Keine Sitzung.'],
+            ['status' => 403, 'description' => 'Angemeldet, aber kein Admin.'],
+            ['status' => 422, 'description' => 'Kein SMTP konfiguriert oder keine gültige Empfängeradresse.'],
+            ['status' => 502, 'description' => 'Der SMTP-Server hat den Versand abgelehnt (`error` enthält den Grund).'],
+        ],
+    ],
+    [
         'method' => 'POST',
         'pattern' => '/admin/modules/check',
         'tag' => 'Module',
