@@ -22,6 +22,7 @@ use Tds\CoreFrontendApi\Middleware\AuthMiddleware;
 use Tds\CoreFrontendApi\Middleware\CorsMiddleware;
 use Tds\CoreFrontendApi\Service\ApiReference;
 use Tds\CoreFrontendApi\Service\AutoUpdater;
+use Tds\CoreFrontendApi\Service\MailConfig;
 use Tds\CoreFrontendApi\Service\ModuleUpdateConfig;
 use Tds\CoreFrontendApi\Service\NotificationFeed;
 use Tds\CoreFrontendApi\Service\NullMailer;
@@ -31,6 +32,7 @@ use Tds\CoreFrontendApi\Service\SmtpMailer;
 use Tds\CoreFrontendApi\Service\WorkflowDispatcher;
 use Tds\CoreFrontendApi\Support\AnonymousUserContext;
 use Tds\CoreFrontendApi\Support\MigrationRunner;
+use Tds\Frontend\Contract\Email;
 use Tds\Frontend\Contract\Mailer;
 use Tds\Frontend\Contract\ModuleRegistry;
 use Tds\Frontend\Contract\SettingsStore as SettingsStoreContract;
@@ -303,6 +305,94 @@ final class Bootstrap
             return $response->withHeader('Content-Type', 'application/json');
         });
 
+        // --- E-Mail / SMTP (admin) ----------------------------------------------
+        // The *effective* mail configuration, which the generic settings route
+        // cannot report: it only knows the `mail` namespace's stored rows, while
+        // what actually sends is those rows OR the `MAIL_DSN` fallback. Without
+        // this an admin sees an empty form on a host that mails perfectly well
+        // and would "fix" it by overwriting a working transport.
+        //
+        // Carries no secret — only whether a password is stored.
+        $app->get('/admin/mail', function (Request $request, Response $response) use ($container): Response {
+            $denied = self::denyUnlessAdmin($container, $response);
+            if ($denied !== null) {
+                return $denied;
+            }
+            $response->getBody()->write(json_encode(self::mailConfig($container)->status(), JSON_THROW_ON_ERROR));
+            return $response->withHeader('Content-Type', 'application/json');
+        });
+
+        // Send a test mail. SMTP fails in ways a form cannot validate (wrong
+        // port, refused relay, bad credentials), and the modules that use the
+        // mailer send on events an admin cannot trigger at will — so "es ist
+        // gespeichert" is not the same as "es verschickt", and this is the only
+        // way to tell the two apart before a customer notices.
+        $app->post('/admin/mail/test', function (Request $request, Response $response) use ($container): Response {
+            $denied = self::denyUnlessAdmin($container, $response);
+            if ($denied !== null) {
+                return $denied;
+            }
+
+            $config = self::mailConfig($container);
+            if (!$config->isConfigured()) {
+                $response->getBody()->write(json_encode([
+                    'ok' => false,
+                    'error' => 'Kein SMTP konfiguriert.',
+                ], JSON_THROW_ON_ERROR));
+                return $response->withStatus(422)->withHeader('Content-Type', 'application/json');
+            }
+
+            $user = $container->get(UserContext::class);
+            $body = (array) $request->getParsedBody();
+            $to = trim((string) ($body['to'] ?? ''));
+            if ($to === '') {
+                // Default to the admin's own address — the common case, and it
+                // keeps the route from being usable as a mail relay by accident.
+                $to = trim((string) ($user->email() ?? ''));
+            }
+            if (filter_var($to, FILTER_VALIDATE_EMAIL) === false) {
+                $response->getBody()->write(json_encode([
+                    'ok' => false,
+                    'error' => 'Keine gültige Empfängeradresse.',
+                ], JSON_THROW_ON_ERROR));
+                return $response->withStatus(422)->withHeader('Content-Type', 'application/json');
+            }
+
+            $mailer = $container->get(Mailer::class);
+            if (!$mailer->isConfigured()) {
+                // MailConfig said yes but the transport could not be built —
+                // a malformed DSN. Report it as such instead of "gesendet".
+                $response->getBody()->write(json_encode([
+                    'ok' => false,
+                    'error' => 'Die SMTP-Verbindung konnte nicht aufgebaut werden (ungültige Konfiguration).',
+                ], JSON_THROW_ON_ERROR));
+                return $response->withStatus(502)->withHeader('Content-Type', 'application/json');
+            }
+
+            try {
+                $mailer->send(new Email(
+                    toEmail: $to,
+                    toName: $to,
+                    subject: 'Testmail aus dem Verwaltungsbereich',
+                    htmlBody: '<p>Diese Testmail bestätigt, dass der E-Mail-Versand funktioniert.</p>'
+                        . '<p>Absender: ' . htmlspecialchars($config->fromName, ENT_QUOTES) . ' &lt;'
+                        . htmlspecialchars($config->fromEmail, ENT_QUOTES) . '&gt;<br>'
+                        . 'Quelle der Konfiguration: ' . htmlspecialchars($config->source, ENT_QUOTES) . '</p>',
+                    textBody: 'Diese Testmail bestätigt, dass der E-Mail-Versand funktioniert.',
+                ));
+            } catch (\Throwable $e) {
+                $response->getBody()->write(json_encode([
+                    'ok' => false,
+                    'error' => MailConfig::redact($e->getMessage()),
+                ], JSON_THROW_ON_ERROR));
+                // 502: the upstream SMTP server failed — the request was fine.
+                return $response->withStatus(502)->withHeader('Content-Type', 'application/json');
+            }
+
+            $response->getBody()->write(json_encode(['ok' => true, 'to' => $to], JSON_THROW_ON_ERROR));
+            return $response->withHeader('Content-Type', 'application/json');
+        });
+
         // --- Module inventory + update (admin) ----------------------------------
         // The panel's Module page. The BUILD knows what is installed (each
         // manifest's version, baked into the static product); this side supplies
@@ -467,6 +557,22 @@ final class Bootstrap
     }
 
     /**
+     * SMTP configuration, read DB-first with `MAIL_DSN` as the env fallback.
+     * Defensive for the same reason as {@see moduleUpdateConfig}: the settings
+     * page must render on a host that has no database yet.
+     */
+    private static function mailConfig(Container $container): MailConfig
+    {
+        $store = null;
+        try {
+            $store = $container->get(SettingsStoreContract::class);
+        } catch (\Throwable) {
+            // No DB / no container binding — env-only.
+        }
+        return MailConfig::resolve($store, static fn (string $k, ?string $d): string => self::env($k, $d));
+    }
+
+    /**
      * The unattended module updater, sharing the settings store and the same
      * `var/` marker convention the auto-migrator uses.
      */
@@ -543,17 +649,30 @@ final class Bootstrap
             ]);
         });
 
-        // Core SMTP mailer. Unconfigured (no MAIL_DSN) → a no-op mailer, so a
-        // module can call send() unconditionally. Config + From live here only.
-        $container->set(Mailer::class, static function (): Mailer {
-            $dsn = self::env('MAIL_DSN', '');
-            if ($dsn === '') {
+        // Core SMTP mailer. Configured DB-first (Einstellungen → E-Mail (SMTP))
+        // with `MAIL_DSN` as the env fallback; unconfigured → a no-op mailer, so
+        // a module can call send() unconditionally. Config + From live here only.
+        //
+        // Lazy like every other binding: resolving MailConfig touches the
+        // settings store, which touches PDO — doing that at boot would take the
+        // service down on a host whose DB config is not in place yet.
+        $container->set(Mailer::class, static function ($c): Mailer {
+            $config = self::mailConfig($c);
+            if (!$config->isConfigured()) {
+                return new NullMailer();
+            }
+            try {
+                $transport = Transport::fromDsn($config->dsn);
+            } catch (\Throwable) {
+                // A malformed stored DSN must not 500 every route that merely
+                // *resolves* the mailer — degrade to the no-op one instead. The
+                // settings page reports the failure through the test route.
                 return new NullMailer();
             }
             return new SmtpMailer(
-                new SymfonyMailer(Transport::fromDsn($dsn)),
-                self::env('MAIL_FROM', 'no-reply@tracht-digital.de'),
-                self::env('MAIL_FROM_NAME', 'Tracht Digital Solutions'),
+                new SymfonyMailer($transport),
+                $config->fromEmail,
+                $config->fromName,
             );
         });
 
