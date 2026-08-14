@@ -296,6 +296,18 @@ make the updater deploy continuously.
   > the app log (the failure precedes the error handler). This shipped in
   > `.env.example` (fixed in 0.11.1) and in the gateway's `install.php` (fixed
   > in tds-gateway-api 0.4.8), so **every fresh install had a dead frontend**.
+  >
+  > **The env contract is now checked across repos, not remembered (0.14.1).**
+  > `.env.example` had never listed `DOCUMENT_ROOT_DIR` / `DOCUMENT_SIGN_SECRET`
+  > even though the gateway's `install.php` writes both — the documented setup
+  > and the generated one had quietly disagreed since the documents surface
+  > moved in here. The installer lives in a *different repo* from the services
+  > it configures, so this class of drift is invisible from either side alone.
+  > `tds-gateway-api/scripts/check-env-parity.php` now fails the assemble when a
+  > service's `.env.example` gains a key `install.php` does not write (or vice
+  > versa). Adding an env var here therefore forces a decision over there:
+  > either the installer asks for it, or it goes on that script's `DEFAULTED`
+  > list with the reason its default is safe.
   > **Keep `symfony/mailer` + `symfony/mime` on the same MAJOR as
   > `tds-customer-api`.** In the gateway's in-process mode all services share one
   > PHP process and Composer autoloaders are first-come-first-served per class
