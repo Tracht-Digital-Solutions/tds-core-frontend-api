@@ -334,6 +334,16 @@ make the updater deploy continuously.
   > versa). Adding an env var here therefore forces a decision over there:
   > either the installer asks for it, or it goes on that script's `DEFAULTED`
   > list with the reason its default is safe.
+  >
+  > **A composed extension's env vars belong in THIS file too (0.15.1).** The
+  > service is the deployment unit, so an extension's settings are the frontend
+  > service's settings — `.env.example` now documents the support-tickets
+  > mailbox (`TICKET_ADMIN_EMAIL`, `TICKET_UPLOAD_DIR`, `INGEST_TOKEN`,
+  > `IMAP_*`, `TICKET_INGEST_*`) that `tds-ext-support-tickets-pkg` has read
+  > since it was ported, and never mentioned here. All of them are a *fallback*
+  > now: the mailbox is configured under Einstellungen → Support-Tickets →
+  > E-Mail-Eingang through the runtime settings store, so they are listed in the
+  > parity script's `DEFAULTED` table rather than written by `install.php`.
   > **Keep `symfony/mailer` + `symfony/mime` on the same MAJOR as
   > `tds-customer-api`.** In the gateway's in-process mode all services share one
   > PHP process and Composer autoloaders are first-come-first-served per class
