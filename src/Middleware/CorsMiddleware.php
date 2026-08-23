@@ -17,8 +17,25 @@ use Slim\Psr7\Response;
  */
 final class CorsMiddleware implements MiddlewareInterface
 {
-    /** @param string[] $allowedOrigins */
-    public function __construct(private readonly array $allowedOrigins)
+    /**
+     * @param (callable(string): bool)|list<string> $allowedOrigins A PREDICATE,
+     *        not a list, because the allow-list is editable in the panel now
+     *        ({@see \Tds\CoreFrontendApi\Service\CorsConfig}). Two things follow
+     *        from that and both are load-bearing:
+     *
+     *        A list captured at boot would only change on the next deploy — the
+     *        setting would appear to save and quietly do nothing.
+     *
+     *        And asking for the whole list would mean resolving the stored layer
+     *        on every request. This middleware is OUTERMOST: it runs before
+     *        anything else, on every call including preflights, so that would
+     *        put a database connection attempt in front of the entire API — on a
+     *        host whose DB is down or firewalled, not a slow request but a hung
+     *        one. A predicate lets the caller answer from the coded baseline
+     *        first and reach for the database only for an origin nothing else
+     *        covers. A plain list is still accepted, for tests.
+     */
+    public function __construct(private readonly mixed $allowedOrigins)
     {
     }
 
@@ -33,9 +50,24 @@ final class CorsMiddleware implements MiddlewareInterface
         return $this->withCorsHeaders($handler->handle($request), $origin);
     }
 
+    private function allows(string $origin): bool
+    {
+        if (!is_callable($this->allowedOrigins)) {
+            return in_array($origin, $this->allowedOrigins, true);
+        }
+        try {
+            return (bool) ($this->allowedOrigins)($origin);
+        } catch (\Throwable) {
+            // A CORS policy that throws would take the whole API down on a
+            // database hiccup. Degrade to "not allowed" rather than to a 500 —
+            // the request still answers, just without the header.
+            return false;
+        }
+    }
+
     private function withCorsHeaders(ResponseInterface $response, string $origin): ResponseInterface
     {
-        if ($origin !== '' && in_array($origin, $this->allowedOrigins, true)) {
+        if ($origin !== '' && $this->allows($origin)) {
             $response = $response
                 ->withHeader('Access-Control-Allow-Origin', $origin)
                 ->withHeader('Access-Control-Allow-Credentials', 'true')

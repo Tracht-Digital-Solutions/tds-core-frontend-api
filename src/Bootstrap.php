@@ -22,6 +22,7 @@ use Tds\CoreFrontendApi\Middleware\AuthMiddleware;
 use Tds\CoreFrontendApi\Middleware\CorsMiddleware;
 use Tds\CoreFrontendApi\Service\ApiReference;
 use Tds\CoreFrontendApi\Service\AutoUpdater;
+use Tds\CoreFrontendApi\Service\CorsConfig;
 use Tds\CoreFrontendApi\Service\MailConfig;
 use Tds\CoreFrontendApi\Service\ModuleUpdateConfig;
 use Tds\CoreFrontendApi\Service\NotificationFeed;
@@ -70,7 +71,10 @@ final class Bootstrap
         // added after routing so it is outermost; otherwise routing 405s an
         // OPTIONS preflight (no OPTIONS routes) before CORS can short-circuit
         // it, and browsers block every cross-origin request. See PreflightTest.
-        $app->add(new CorsMiddleware(self::corsOrigins()));
+        // A predicate, not a list: the allow-list is editable in the panel
+        // (Einstellungen → CORS), and a list captured here would only change on
+        // the next deploy — the setting would save and quietly do nothing.
+        $app->add(new CorsMiddleware(static fn (string $origin): bool => self::corsAllows($container, $origin)));
 
         // Compose the enabled extensions. A duplicate id / missing dep / cycle
         // throws here (fail fast at boot), and a duplicate permission/setting
@@ -390,6 +394,66 @@ final class Bootstrap
             }
 
             $response->getBody()->write(json_encode(['ok' => true, 'to' => $to], JSON_THROW_ON_ERROR));
+            return $response->withHeader('Content-Type', 'application/json');
+        });
+
+        // --- CORS / allowed origins (admin) -------------------------------------
+        // Which browser origins may call this API. It lived only in
+        // `CORS_ALLOWED_ORIGINS` on the host, i.e. it could be changed only by
+        // editing a file over SSH on a host whose entire install model is "no
+        // SSH" — so in practice it was whatever the installer wrote once.
+        //
+        // A dedicated pair rather than the generic settings routes, for the two
+        // reasons the mail pair exists: the namespace alone cannot report what
+        // is EFFECTIVE (baseline + env + stored), and a near-miss value here
+        // fails silently forever — the comparison is an exact string match, so
+        // a saved `https://kunde.de/` unblocks nothing and says nothing.
+        $app->get('/admin/cors', function (Request $request, Response $response) use ($container): Response {
+            $denied = self::denyUnlessAdmin($container, $response);
+            if ($denied !== null) {
+                return $denied;
+            }
+            $response->getBody()->write(json_encode(self::corsConfig($container)->status(), JSON_THROW_ON_ERROR));
+            return $response->withHeader('Content-Type', 'application/json');
+        });
+
+        $app->put('/admin/cors', function (Request $request, Response $response) use ($container): Response {
+            $denied = self::denyUnlessAdmin($container, $response);
+            if ($denied !== null) {
+                return $denied;
+            }
+
+            $body = (array) $request->getParsedBody();
+            $submitted = $body['origins'] ?? [];
+            if (is_string($submitted)) {
+                // A textarea posted as one blob — accept it, splitting on the
+                // same separators the stored form uses.
+                $submitted = CorsConfig::split($submitted);
+            }
+            if (!is_array($submitted)) {
+                $response->getBody()->write(json_encode(['error' => 'origins must be a list'], JSON_THROW_ON_ERROR));
+                return $response->withStatus(422)->withHeader('Content-Type', 'application/json');
+            }
+
+            [$accepted, $rejected] = CorsConfig::normalizeList(array_values($submitted));
+
+            try {
+                $container->get(SettingsStoreContract::class)
+                    ->set(CorsConfig::NAMESPACE, CorsConfig::KEY_ORIGINS, implode("\n", $accepted), false);
+            } catch (\Throwable) {
+                $response->getBody()->write(json_encode([
+                    'error' => 'Einstellungen konnten nicht gespeichert werden — keine Datenbank konfiguriert.',
+                ], JSON_THROW_ON_ERROR));
+                return $response->withStatus(503)->withHeader('Content-Type', 'application/json');
+            }
+
+            // Report the rejects rather than swallowing them: an entry that was
+            // silently dropped looks saved and blocks nothing.
+            $response->getBody()->write(json_encode([
+                'ok' => true,
+                'saved' => $accepted,
+                'rejected' => $rejected,
+            ] + self::corsConfig($container)->status(), JSON_THROW_ON_ERROR));
             return $response->withHeader('Content-Type', 'application/json');
         });
 
@@ -812,34 +876,53 @@ final class Bootstrap
     }
 
     /**
-     * Allowed CORS origins = a hardcoded baseline of the first-party
-     * *.tracht-digital.de production surfaces, merged with any extra origins from
-     * CORS_ALLOWED_ORIGINS (deduped). The baseline means the widgets/frontends
-     * always work even if the host `.env` is unset or stale — the env only ADDS
-     * (e.g. http://localhost:4321 for dev). All baseline entries are TDS's own
-     * domains; the live-chat-cta bubble on the public site + blog needs
-     * tracht-digital.de + blog. here (it calls with credentials).
+     * The effective CORS allow-list: the coded first-party baseline, plus
+     * `CORS_ALLOWED_ORIGINS` from the host `.env`, plus whatever an admin has
+     * added in the panel — a UNION, never an override. See {@see CorsConfig}
+     * for why this one namespace does not let the database win.
      *
-     * @return string[]
+     * Defensive for the same reason as {@see mailConfig}: it runs on every
+     * request through the middleware, so a host with no database yet must get
+     * baseline + env rather than an exception.
      */
-    private static function corsOrigins(): array
+    /**
+     * May this origin call the API? The middleware's hot path.
+     *
+     * Checks the two free layers first — the coded baseline and
+     * `CORS_ALLOWED_ORIGINS` — and only asks the settings store about an origin
+     * neither covers. That ordering is the whole point: this runs outermost on
+     * EVERY request, preflights included, so resolving the store unconditionally
+     * would put a PDO connect in front of the entire API. With a database that
+     * is down or firewalled that is not a slow request but a hung one, and it
+     * would hang the health check too. Requests from the first-party frontends,
+     * which is nearly all of them, never touch the database here.
+     */
+    private static function corsAllows(Container $container, string $origin): bool
     {
-        $baseline = [
-            'https://tracht-digital.de',
-            // The canonical landingpage is the apex, but a visitor who lands on
-            // `www.` would post the contact form from an origin that is not on
-            // this list — and a missing Access-Control-Allow-Origin is silent:
-            // the browser drops the response, the form shows its generic
-            // "try again later", and nothing is logged anywhere.
-            'https://www.tracht-digital.de',
-            'https://blog.tracht-digital.de',
-            'https://management.tracht-digital.de',
-            'https://app.tracht-digital.de',
-            'https://tools.tracht-digital.de',
-            'https://auth.tracht-digital.de',
-        ];
-        $raw = self::env('CORS_ALLOWED_ORIGINS', '');
-        $extra = array_filter(array_map('trim', explode(',', $raw)));
-        return array_values(array_unique([...$baseline, ...$extra]));
+        if ($origin === '') {
+            return false;
+        }
+        $env = static fn (string $k, ?string $d = null): string => self::env($k, $d);
+        if (in_array($origin, CorsConfig::staticOrigins($env), true)) {
+            return true;
+        }
+        return in_array($origin, self::corsConfig($container)->custom, true);
+    }
+
+    private static function corsConfig(Container $container): CorsConfig
+    {
+        $store = null;
+        // Gate on a configured database before even resolving the store: the
+        // binding constructs a PDO eagerly, and on a host without one that
+        // would be a failed connection attempt on EVERY request (this
+        // middleware is outermost), not just on the routes that need data.
+        if (self::env('DB_NAME', '') !== '') {
+            try {
+                $store = $container->get(SettingsStoreContract::class);
+            } catch (\Throwable) {
+                // No DB / no container binding — baseline + env only.
+            }
+        }
+        return CorsConfig::resolve($store, static fn (string $k, ?string $d): string => self::env($k, $d));
     }
 }

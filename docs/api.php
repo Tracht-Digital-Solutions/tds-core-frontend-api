@@ -268,6 +268,61 @@ return [
         ],
     ],
     [
+        'method' => 'GET',
+        'pattern' => '/admin/cors',
+        'tag' => 'Einstellungen',
+        'summary' => 'Effektive CORS-Freigabe lesen',
+        'description' => 'Welche Browser-Origins diese API aufrufen dürfen — mit der **Ebene**, '
+            . 'aus der jeder Eintrag stammt: `baseline` (fest eingebaute erste Partei, '
+            . 'nicht entfernbar), `env` (`CORS_ALLOWED_ORIGINS` aus der `.env` des Hosts) '
+            . 'oder `db` (im Panel gepflegt). Die drei Ebenen werden **vereinigt**, nie '
+            . 'übersteuert: sonst könnte eine Änderung im Panel genau das Frontend '
+            . 'aussperren, das sie zurücknehmen müsste.',
+        'auth' => 'admin',
+        'responses' => [
+            [
+                'status' => 200,
+                'description' => '`{origins: [{origin, source}], custom, store_available}`',
+                'example' => '{"origins":[{"origin":"https://app.tracht-digital.de","source":"baseline"},'
+                    . '{"origin":"https://kunde.example","source":"db"}],'
+                    . '"custom":["https://kunde.example"],"store_available":true}',
+            ],
+            ['status' => 401, 'description' => 'Keine Sitzung.'],
+            ['status' => 403, 'description' => 'Angemeldet, aber kein Admin.'],
+        ],
+    ],
+    [
+        'method' => 'PUT',
+        'pattern' => '/admin/cors',
+        'tag' => 'Einstellungen',
+        'summary' => 'Zusätzliche CORS-Origins speichern',
+        'description' => 'Speichert **nur** die zusätzliche Liste; Baseline und `.env` bleiben '
+            . 'unberührt. Jeder Eintrag wird auf die Form normalisiert, die ein Browser '
+            . 'im `Origin`-Header sendet (Schema + Host + optional Port, kein Pfad, kein '
+            . 'Schrägstrich am Ende) — der Vergleich ist ein exakter Zeichenkettenabgleich, '
+            . 'ein knapp danebenliegender Wert würde also dauerhaft und lautlos nichts '
+            . 'freischalten. Abgelehnte Einträge kommen mit Begründung zurück, statt '
+            . 'stillschweigend zu verschwinden. `*` wird abgelehnt: zusammen mit '
+            . '`Allow-Credentials` verbietet der Standard den Platzhalter.',
+        'auth' => 'admin',
+        'params' => [
+            [
+                'in' => 'body',
+                'name' => 'origins',
+                'type' => 'array',
+                'required' => true,
+                'description' => 'Liste von Origins (oder ein Text mit Zeilen-/Kommatrennung).',
+            ],
+        ],
+        'responses' => [
+            ['status' => 200, 'description' => '`{ok: true, saved, rejected, origins, custom, store_available}`'],
+            ['status' => 401, 'description' => 'Keine Sitzung.'],
+            ['status' => 403, 'description' => 'Angemeldet, aber kein Admin.'],
+            ['status' => 422, 'description' => '`origins` ist keine Liste.'],
+            ['status' => 503, 'description' => 'Keine Datenbank konfiguriert — es gibt nichts zu speichern.'],
+        ],
+    ],
+    [
         'method' => 'POST',
         'pattern' => '/admin/modules/check',
         'tag' => 'Module',

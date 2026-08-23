@@ -239,6 +239,41 @@ make the updater deploy continuously.
   contact form from an origin the browser will refuse the response for — and a
   missing `Access-Control-Allow-Origin` is silent: the form shows its generic
   "try again later" and nothing is logged.
+- **The allow-list is THREE UNIONED LAYERS, and the union is the safety
+  property (0.16.0, `Service\CorsConfig`).** Coded baseline ∪
+  `CORS_ALLOWED_ORIGINS` ∪ the rows an admin edits under Einstellungen →
+  *CORS / Freigegebene Origins*. It joined the settings store for the reason
+  the mail and IMAP moves already established — *a feature that can only be
+  configured by editing a file on the host is, on this Plesk host, a feature
+  nobody has* — but note the deliberate DIFFERENCE from those two: **this is
+  the one namespace where the database does not outrank the env.** Everywhere
+  else DB-first exists so an `.env` written at install time cannot shadow the
+  form. Here the worse failure runs the other way and is unrecoverable from the
+  panel: an admin who removes the origin their own frontend runs on locks the
+  panel out of the API, and the only surface that could put it back is the one
+  that just stopped working. Union + baseline means no edit made in a browser
+  can cost you the browser.
+- **The middleware takes a PREDICATE, and checks the free layers first.** It is
+  outermost, so it runs on every request including preflights. Resolving the
+  settings store unconditionally would put a PDO connect in front of the entire
+  API — on a host whose database is down or firewalled that is not a slow
+  request but a hung one, and it would hang `/healthz` with it. `corsAllows()`
+  answers from baseline + env without touching the database and only consults
+  the stored layer for an origin neither covers, which for the first-party
+  frontends is never. (This was written the naive way first and the local test
+  suite hung on it immediately — a dev `.env` pointing at a stopped MariaDB.)
+- **`PUT /admin/cors` normalises, and reports what it refused.** The comparison
+  is an exact string match, so `https://kunde.de/` — the standard paste error —
+  unblocks nothing, permanently, with no error anywhere to connect it to the
+  site that stayed broken. Trailing slashes and host case are normalised; a
+  path, a scheme other than http(s), credentials, or `*` are refused *with a
+  reason that goes back to the form*. `*` gets its own message because it is the
+  natural reach for "allow everything" and would instead break every request:
+  the list is served with `Access-Control-Allow-Credentials: true`, where the
+  spec forbids the wildcard outright. **`GET /admin/cors`** reports the
+  effective list with each entry's layer, the same "what is actually in force"
+  role `GET /admin/mail` plays for SMTP — without it the un-deletable baseline
+  entries read as a bug.
 - **`env()` uses explicit `?? false` checks**, never
   `$_ENV[$k] ?? getenv($k) ?: $default` (`??` binds tighter than `?:`, clobbering
   "0"/""). See `Bootstrap::env()`.
