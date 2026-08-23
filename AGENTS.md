@@ -89,6 +89,59 @@ shared `app_setting` table via the core PDO); the DeepL/rebuild env vars stay th
 fallback. The **base itself** uses two namespaces: `modules` (Module & Deployment)
 and `mail` (SMTP, see *Core services for modules*).
 
+## Site connections / site keys (`/admin/sites`, `POST /sites/handshake`)
+
+The credential that binds a public static site (landingpage / blog / tools /
+auth, plus custom ones) to this API, and the first place the platform records
+that a site is connected at all. Before it there were **five disjoint per-site
+registers and no key anywhere**: the CORS list knew origins but no sites,
+`cms_site` and `blog` knew sites but no origins, tools had one global
+`registry_token`, live-chat had a hardcoded slug list, and the four public
+origins were enumerated only in a frontend bundle the API could never see.
+
+- **`Service\SiteKeyStore`** (bound as the contract's `SiteKeys`) owns
+  `app_site_key` — its own table, not an `app_setting` row, because a site has
+  several keys over its life and each carries metadata the panel exists to show.
+  Self-bootstrapping DDL like `SettingsStore`, and **only a SHA-256 hash is
+  persisted**: the plaintext exists once, in the response of `POST /admin/sites`.
+  That also means the store needs **no `SETTINGS_ENCRYPTION_KEY`**, so it works
+  on a host where that variable was never set. Verification is one indexed
+  lookup on the digest.
+- **`Service\SiteKeyPolicy`** (namespace `sites`) holds the enforcement mode and
+  the custom-site list, DB-first with `SITE_KEY_ENFORCEMENT` as fallback. Note
+  this is **not** the CORS inversion: nothing here can lock an admin out, since
+  the panel's own routes are never site-key protected.
+- **`Middleware\SiteKeyMiddleware`** gates only the prefixes modules declare
+  through the contract's `SiteKeyProtected` (`ModuleRegistry::siteKeyRoutes()`).
+
+Five things about this are load-bearing:
+
+- **Middleware order is `add()` site-keys → auth → CORS.** Slim is LIFO, so that
+  runs CORS → auth → site-keys. It must be *inside* CORS (or a 401 has no
+  `Access-Control-Allow-Origin` and reports itself to the browser as a CORS
+  failure) and *after* auth (or the admin exemption reads an anonymous context
+  and never fires, locking the panel out of the CMS preview).
+- **The container is touched only after a prefix matches.** Resolving
+  `SiteKeys::class` constructs `PDO`, i.e. connects; this middleware sees every
+  request, so an unconditional resolve puts a database connection — a hung one
+  when the DB is down — in front of the whole API. Same rule the CORS predicate
+  follows.
+- **Enforcement is three-valued** (`off` default / `warn` / `enforce`), like
+  support-tickets' `ingest_mode`. Going straight to `enforce` breaks whichever
+  site was forgotten, in production, **invisibly**: the build-time fetch on the
+  other end is fail-soft, so a rejected site renders its baked fallbacks and
+  reports success. `warn` serves, counts and logs so the gap is a number first.
+- **The key travels in a header (`X-TDS-Site-Key`) or the body (`site_key`),
+  never the query string** — a credential in an access log, a referrer or
+  browser history outlives the request it was sent for. The header is in the
+  preflight allow-list even though today's callers are server-side, so the first
+  browser use does not die at an OPTIONS.
+- **`POST /sites/handshake` is public by necessity.** It runs in the operator's
+  browser on the site's own domain before anything is connected — exactly like
+  the tools registry sync beside it. It reports the CORS state of the
+  **requesting** origin, not the one stored on the key, because on a staging
+  host the latter would be confidently wrong.
+
 ## Base-service data (per-user preferences)
 
 `GET`/`PUT /me/preferences` hold each authenticated user's **theme, locale and
@@ -437,7 +490,7 @@ after deploy.
 ## Tests
 
 ```bash
-composer test    # phpunit, 98 tests (18 skip without TDS_TEST_DB_DSN)
+composer test    # phpunit, 211 tests (27 skip without TDS_TEST_DB_DSN)
 ```
 
 > **One TestCase per file, named after the file.** PHPUnit's directory loader

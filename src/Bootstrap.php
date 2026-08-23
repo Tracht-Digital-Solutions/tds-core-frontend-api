@@ -20,6 +20,7 @@ use Tds\CoreFrontendApi\Domain\UserPreferenceRepository;
 use Tds\CoreFrontendApi\Support\PreferenceWhitelist;
 use Tds\CoreFrontendApi\Middleware\AuthMiddleware;
 use Tds\CoreFrontendApi\Middleware\CorsMiddleware;
+use Tds\CoreFrontendApi\Middleware\SiteKeyMiddleware;
 use Tds\CoreFrontendApi\Service\ApiReference;
 use Tds\CoreFrontendApi\Service\AutoUpdater;
 use Tds\CoreFrontendApi\Service\CorsConfig;
@@ -29,6 +30,8 @@ use Tds\CoreFrontendApi\Service\NotificationFeed;
 use Tds\CoreFrontendApi\Service\NullMailer;
 use Tds\CoreFrontendApi\Service\PackageRegistry;
 use Tds\CoreFrontendApi\Service\SettingsStore;
+use Tds\CoreFrontendApi\Service\SiteKeyPolicy;
+use Tds\CoreFrontendApi\Service\SiteKeyStore;
 use Tds\CoreFrontendApi\Service\SmtpMailer;
 use Tds\CoreFrontendApi\Service\WorkflowDispatcher;
 use Tds\CoreFrontendApi\Support\AnonymousUserContext;
@@ -37,6 +40,7 @@ use Tds\Frontend\Contract\Email;
 use Tds\Frontend\Contract\Mailer;
 use Tds\Frontend\Contract\ModuleRegistry;
 use Tds\Frontend\Contract\SettingsStore as SettingsStoreContract;
+use Tds\Frontend\Contract\SiteKeys;
 use Tds\Frontend\Contract\UserContext;
 
 /**
@@ -64,6 +68,23 @@ final class Bootstrap
         $app->addBodyParsingMiddleware();
         $app->addRoutingMiddleware();
         $app->addErrorMiddleware(self::env('APP_ENV', 'production') !== 'production', true, true);
+        // Compose the enabled extensions. A duplicate id / missing dep / cycle
+        // throws here (fail fast at boot), and a duplicate permission/setting
+        // key throws when the catalog is read below.
+        //
+        // Constructed BEFORE the middleware stack because the site-key gate
+        // needs the merged prefix list; the routes themselves are only mounted
+        // by registerAll() further down, and $app->add() applies to the whole
+        // app regardless of when a route was added.
+        $registry = new ModuleRegistry(Modules::enabled());
+
+        // Site keys gate the PUBLIC SITE-READ routes each module declares
+        // (SiteKeyProtected). Added FIRST of the three so it RUNS LAST of them:
+        // it needs the principal AuthMiddleware populates (the admin exemption),
+        // and it must sit inside CorsMiddleware so a 401 still carries the CORS
+        // headers — otherwise a rejected key reports itself to the browser as a
+        // CORS failure. See SiteKeyMiddleware and PreflightTest.
+        $app->add(new SiteKeyMiddleware($container, $registry->siteKeyRoutes()));
         // Auth populates the request principal (UserContext) each request; it
         // does NOT gate — routes/modules enforce via the resolved context.
         $app->add(new AuthMiddleware($container, self::tokenVerifier($rootDir)));
@@ -76,10 +97,6 @@ final class Bootstrap
         // the next deploy — the setting would save and quietly do nothing.
         $app->add(new CorsMiddleware(static fn (string $origin): bool => self::corsAllows($container, $origin)));
 
-        // Compose the enabled extensions. A duplicate id / missing dep / cycle
-        // throws here (fail fast at boot), and a duplicate permission/setting
-        // key throws when the catalog is read below.
-        $registry = new ModuleRegistry(Modules::enabled());
         $registry->registerAll($app);
 
         // In-process auto-migrate: on the first request after a deploy, apply
@@ -457,6 +474,260 @@ final class Bootstrap
             return $response->withHeader('Content-Type', 'application/json');
         });
 
+        // --- Site connections / site keys ---------------------------------------
+        //
+        // Which public static site is connected to this API, and the credential
+        // that proves it. Before this there was no such notion at all: five
+        // disjoint per-site registers (the CORS origins, cms_site, blog,
+        // the tools singleton, the live-chat frontend list), none of them
+        // carrying a key, and the four site origins enumerated only inside a
+        // frontend bundle the API could never see.
+        //
+        // A dedicated route set rather than the generic settings pair, for the
+        // reason the mail and CORS pairs exist: the namespace alone cannot
+        // answer what is EFFECTIVE. Here that means the issued keys with their
+        // last-used bookkeeping, whether each site's origin is CORS-allowed at
+        // all, which route prefixes the modules actually protect, and how many
+        // keyless reads `warn` mode has counted.
+        $app->get('/admin/sites', function (Request $request, Response $response) use ($container, $registry): Response {
+            $denied = self::denyUnlessAdmin($container, $response);
+            if ($denied !== null) {
+                return $denied;
+            }
+
+            $policy = self::siteKeyPolicy($container);
+            $store = self::siteKeyStore($container);
+            $allowed = array_column(self::corsConfig($container)->status()['origins'], 'source', 'origin');
+
+            $keys = $store?->all() ?? [];
+            $bySite = [];
+            foreach ($keys as $key) {
+                $bySite[$key['site']][] = $key;
+            }
+
+            $sites = [];
+            foreach ($policy->sites() as $site) {
+                $origins = [];
+                foreach ($site['origins'] as $origin) {
+                    $origins[] = [
+                        'origin' => $origin,
+                        // `null` = not allowed at all. Reported per origin and
+                        // not per site because the landingpage has two and a
+                        // visitor who lands on `www.` posts from the other one.
+                        'cors' => $allowed[$origin] ?? null,
+                    ];
+                }
+                $sites[] = $site + [
+                    'origins' => $origins,
+                    'keys' => $bySite[$site['id']] ?? [],
+                ];
+            }
+
+            $payload = [
+                'sites' => $sites,
+                'enforcement' => $policy->enforcement,
+                'modes' => SiteKeyPolicy::MODES,
+                'protected_routes' => $registry->siteKeyRoutes(),
+                'unkeyed' => self::unkeyedState($container),
+                'store_available' => $store !== null,
+            ];
+            $response->getBody()->write(json_encode($payload, JSON_THROW_ON_ERROR));
+            return $response->withHeader('Content-Type', 'application/json')->withHeader('Cache-Control', 'no-store');
+        });
+
+        // Issue a key. The plaintext is in THIS response and nowhere else, ever
+        // — only its SHA-256 digest is stored. The frontend renders it in-flow
+        // to be copied, never as a toast: a value the reader must act on cannot
+        // be shown in something that disappears on a timer.
+        $app->post('/admin/sites', function (Request $request, Response $response) use ($container): Response {
+            $denied = self::denyUnlessAdmin($container, $response);
+            if ($denied !== null) {
+                return $denied;
+            }
+
+            $body = (array) $request->getParsedBody();
+            $site = trim((string) ($body['site'] ?? ''));
+            if ($site === '') {
+                $response->getBody()->write(json_encode(['error' => 'site is required'], JSON_THROW_ON_ERROR));
+                return $response->withStatus(422)->withHeader('Content-Type', 'application/json');
+            }
+
+            $policy = self::siteKeyPolicy($container);
+            $known = null;
+            foreach ($policy->sites() as $candidate) {
+                if ($candidate['id'] === $site) {
+                    $known = $candidate;
+                    break;
+                }
+            }
+            if ($known === null) {
+                // Refused rather than invented: a key for a site nobody declared
+                // would match no build and no origin, and would sit in the list
+                // looking configured.
+                $response->getBody()->write(json_encode([
+                    'error' => 'Unbekannte Site. Zuerst unter „Eigene Sites" anlegen.',
+                ], JSON_THROW_ON_ERROR));
+                return $response->withStatus(422)->withHeader('Content-Type', 'application/json');
+            }
+
+            $store = self::siteKeyStore($container);
+            if ($store === null) {
+                $response->getBody()->write(json_encode([
+                    'error' => 'Site-Keys benötigen eine Datenbank — keine konfiguriert.',
+                ], JSON_THROW_ON_ERROR));
+                return $response->withStatus(503)->withHeader('Content-Type', 'application/json');
+            }
+
+            try {
+                $issued = $store->issue(
+                    $site,
+                    trim((string) ($body['label'] ?? '')) ?: (string) $known['label'],
+                    (string) ($known['origins'][0] ?? ''),
+                );
+            } catch (\Throwable) {
+                $response->getBody()->write(json_encode([
+                    'error' => 'Key konnte nicht erzeugt werden — keine Datenbank konfiguriert.',
+                ], JSON_THROW_ON_ERROR));
+                return $response->withStatus(503)->withHeader('Content-Type', 'application/json');
+            }
+
+            $response->getBody()->write(json_encode([
+                'ok' => true,
+                'id' => $issued['id'],
+                'site' => $site,
+                'key' => $issued['key'],
+                'key_prefix' => $issued['key_prefix'],
+            ], JSON_THROW_ON_ERROR));
+            return $response->withStatus(201)
+                ->withHeader('Content-Type', 'application/json')
+                ->withHeader('Cache-Control', 'no-store');
+        });
+
+        // Revoke. The row stays and is flagged: "this site had a key and
+        // somebody revoked it on the 3rd" is exactly what the page is for, and
+        // a row that vanishes answers nothing.
+        $app->delete('/admin/sites/{id:[0-9]+}', function (Request $request, Response $response, array $args) use ($container): Response {
+            $denied = self::denyUnlessAdmin($container, $response);
+            if ($denied !== null) {
+                return $denied;
+            }
+            $store = self::siteKeyStore($container);
+            $ok = $store !== null && $store->revoke((int) $args['id']);
+            $response->getBody()->write(json_encode(
+                $ok ? ['ok' => true] : ['error' => 'Nicht gefunden oder bereits widerrufen.'],
+                JSON_THROW_ON_ERROR,
+            ));
+            return $response->withStatus($ok ? 200 : 404)->withHeader('Content-Type', 'application/json');
+        });
+
+        // Enforcement mode + the custom site list.
+        $app->put('/admin/sites', function (Request $request, Response $response) use ($container): Response {
+            $denied = self::denyUnlessAdmin($container, $response);
+            if ($denied !== null) {
+                return $denied;
+            }
+
+            $body = (array) $request->getParsedBody();
+            $rejected = [];
+            $writes = [];
+
+            if (array_key_exists('enforcement', $body)) {
+                $mode = SiteKeyPolicy::normalizeMode((string) $body['enforcement']);
+                if ($mode === null) {
+                    $response->getBody()->write(json_encode([
+                        'error' => 'enforcement must be one of: ' . implode(', ', SiteKeyPolicy::MODES),
+                    ], JSON_THROW_ON_ERROR));
+                    return $response->withStatus(422)->withHeader('Content-Type', 'application/json');
+                }
+                $writes[SiteKeyPolicy::KEY_ENFORCEMENT] = $mode;
+            }
+
+            if (array_key_exists('sites', $body)) {
+                if (!is_array($body['sites'])) {
+                    $response->getBody()->write(json_encode(['error' => 'sites must be a list'], JSON_THROW_ON_ERROR));
+                    return $response->withStatus(422)->withHeader('Content-Type', 'application/json');
+                }
+                [$accepted, $rejected] = SiteKeyPolicy::normalizeSites(array_values($body['sites']));
+                $writes[SiteKeyPolicy::KEY_CUSTOM_SITES] = SiteKeyPolicy::encodeSites($accepted);
+            }
+
+            // Explicit reset of the warn counter — otherwise the number only
+            // ever grows and stops meaning "still keyless" the moment one site
+            // is fixed.
+            if (($body['reset_unkeyed'] ?? false) === true) {
+                $writes[SiteKeyPolicy::KEY_UNKEYED] = '';
+            }
+
+            try {
+                $store = $container->get(SettingsStoreContract::class);
+                foreach ($writes as $key => $value) {
+                    $store->set(SiteKeyPolicy::NAMESPACE, $key, $value, false);
+                }
+            } catch (\Throwable) {
+                $response->getBody()->write(json_encode([
+                    'error' => 'Einstellungen konnten nicht gespeichert werden — keine Datenbank konfiguriert.',
+                ], JSON_THROW_ON_ERROR));
+                return $response->withStatus(503)->withHeader('Content-Type', 'application/json');
+            }
+
+            $policy = self::siteKeyPolicy($container);
+            $response->getBody()->write(json_encode([
+                'ok' => true,
+                'enforcement' => $policy->enforcement,
+                'sites' => $policy->sites(),
+                // Reported, never swallowed: an entry that was silently dropped
+                // looks saved, and the key issued for it matches nothing.
+                'rejected' => $rejected,
+            ], JSON_THROW_ON_ERROR));
+            return $response->withHeader('Content-Type', 'application/json');
+        });
+
+        // The handshake the /install wizard performs on each public site.
+        //
+        // PUBLIC by necessity — it runs in the operator's browser on the site's
+        // own domain, before anything is connected, exactly like the tools
+        // registry sync it sits next to. The key goes in the BODY, never a
+        // header (no new preflight) and never the query string (a credential in
+        // an access log outlives its use).
+        //
+        // It is also the only thing that tells the panel a site exists at all:
+        // `tds-runtime.json` is written by hand on the host, so without this
+        // there is no moment at which the API learns which apiBase a site
+        // published.
+        $app->post('/sites/handshake', function (Request $request, Response $response) use ($container): Response {
+            $body = (array) $request->getParsedBody();
+            $key = trim((string) ($body['key'] ?? ''));
+            $site = trim((string) ($body['site'] ?? ''));
+            $apiBase = trim((string) ($body['apiBase'] ?? ''));
+            $origin = $request->getHeaderLine('Origin');
+
+            $store = self::siteKeyStore($container);
+            $identity = $store?->verify($key, $site !== '' ? $site : null, $origin !== '' ? $origin : null);
+            if ($identity === null) {
+                $response->getBody()->write(json_encode([
+                    'error' => 'Site-Key abgelehnt.',
+                ], JSON_THROW_ON_ERROR));
+                return $response->withStatus(401)->withHeader('Content-Type', 'application/json');
+            }
+
+            $store?->touch($identity->id, $origin !== '' ? $origin : null, $apiBase !== '' ? $apiBase : null);
+
+            // Report the CORS state of the origin this very request came from,
+            // not of the origin recorded on the key: the operator may be running
+            // the wizard on a staging host, and telling them about the
+            // production origin would be confidently wrong.
+            $corsOk = $origin === '' || self::corsAllows($container, $origin);
+
+            $response->getBody()->write(json_encode([
+                'ok' => true,
+                'site' => $identity->site,
+                'label' => $identity->label,
+                'cors' => $corsOk ? 'allowed' : 'missing',
+                'origin' => $origin,
+            ], JSON_THROW_ON_ERROR));
+            return $response->withHeader('Content-Type', 'application/json')->withHeader('Cache-Control', 'no-store');
+        });
+
         // --- Module inventory + update (admin) ----------------------------------
         // The panel's Module page. The BUILD knows what is installed (each
         // manifest's version, baked into the static product); this side supplies
@@ -761,6 +1032,20 @@ final class Bootstrap
         $container->set(SettingsStoreContract::class, static fn ($c): SettingsStore =>
             new SettingsStore($c->get(PDO::class), self::env('SETTINGS_ENCRYPTION_KEY', '')));
 
+        // Site keys — the credential a public static site presents. Bound by the
+        // CONTRACT key so a module (tools' registry sync) resolves it exactly
+        // like Mailer/SettingsStore, and null-safely: this factory constructs
+        // PDO, so resolving it is a database connection. Callers that can avoid
+        // asking must avoid asking (see SiteKeyMiddleware).
+        //
+        // Note this store needs NO SETTINGS_ENCRYPTION_KEY: only a SHA-256 hash
+        // is persisted, which is what lets site keys work on a host where that
+        // variable was never set.
+        $container->set(SiteKeys::class, static fn ($c): SiteKeyStore => new SiteKeyStore(
+            $c->get(PDO::class),
+            self::siteKeyPolicy($c),
+        ));
+
         return $container;
     }
 
@@ -924,5 +1209,77 @@ final class Bootstrap
             }
         }
         return CorsConfig::resolve($store, static fn (string $k, ?string $d): string => self::env($k, $d));
+    }
+
+    /**
+     * The site-key policy, resolved the same guarded way as {@see corsConfig()}:
+     * no DB configured means no stored layer, and the env value (or `off`) is
+     * the whole answer. Same reason too — the settings binding constructs a PDO,
+     * so asking for it on a host without one is a failed connection attempt, not
+     * an empty result.
+     */
+    private static function siteKeyPolicy(Container $container): SiteKeyPolicy
+    {
+        $store = null;
+        if (self::env('DB_NAME', '') !== '') {
+            try {
+                $store = $container->get(SettingsStoreContract::class);
+            } catch (\Throwable) {
+                // No DB / no binding — env only.
+            }
+        }
+        return SiteKeyPolicy::resolve($store, static fn (string $k, ?string $d): string => self::env($k, $d));
+    }
+
+    /**
+     * The site-key store, or null when there is no database to hold one.
+     *
+     * Guarded on `DB_NAME` before resolving, for the reason spelled out on
+     * {@see corsConfig()}: the binding constructs a PDO, so on an unconfigured
+     * host asking for it is a failed connection, not an empty answer.
+     */
+    private static function siteKeyStore(Container $container): ?SiteKeyStore
+    {
+        if (self::env('DB_NAME', '') === '') {
+            return null;
+        }
+        try {
+            $store = $container->get(SiteKeys::class);
+            return $store instanceof SiteKeyStore ? $store : null;
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * What `warn` mode has counted so far, or nulls when nothing has been
+     * counted. Shown in the panel so an operator can tell "no keyless reads"
+     * from "nobody has built since I switched this on".
+     *
+     * @return array{count: int, first_at: ?string, last_at: ?string, last_path: ?string, last_origin: ?string}
+     */
+    private static function unkeyedState(Container $container): array
+    {
+        $empty = ['count' => 0, 'first_at' => null, 'last_at' => null, 'last_path' => null, 'last_origin' => null];
+        if (self::env('DB_NAME', '') === '') {
+            return $empty;
+        }
+        try {
+            $raw = $container->get(SettingsStoreContract::class)
+                ->get(SiteKeyPolicy::NAMESPACE, SiteKeyPolicy::KEY_UNKEYED, '') ?? '';
+            $state = json_decode($raw, true, 4, JSON_THROW_ON_ERROR);
+        } catch (\Throwable) {
+            return $empty;
+        }
+        if (!is_array($state)) {
+            return $empty;
+        }
+        return [
+            'count' => (int) ($state['count'] ?? 0),
+            'first_at' => isset($state['first_at']) ? (string) $state['first_at'] : null,
+            'last_at' => isset($state['last_at']) ? (string) $state['last_at'] : null,
+            'last_path' => isset($state['last_path']) ? (string) $state['last_path'] : null,
+            'last_origin' => isset($state['last_origin']) ? (string) $state['last_origin'] : null,
+        ];
     }
 }

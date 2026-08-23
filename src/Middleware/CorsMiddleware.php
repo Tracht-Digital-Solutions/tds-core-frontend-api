@@ -85,7 +85,12 @@ final class CorsMiddleware implements MiddlewareInterface
             // one release. A header missing from this list fails the PREFLIGHT,
             // so the request is never sent at all — the control just looks dead,
             // with an OPTIONS where you are looking for the real call.
-            ->withHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Act-As-Company, X-Act-As-Customer, X-Chat-Token')
+            // X-TDS-Site-Key is listed although the build-time callers that use
+            // it are server-side and never preflight. It is here so that the
+            // day a browser call needs it, the request is not rejected at the
+            // preflight — a failure whose symptom is an OPTIONS where you are
+            // looking for the real request, and nothing in any log.
+            ->withHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Act-As-Company, X-Act-As-Customer, X-Chat-Token, X-TDS-Site-Key')
             ->withHeader('Access-Control-Max-Age', '600');
     }
 }

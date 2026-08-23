@@ -323,6 +323,133 @@ return [
         ],
     ],
     [
+        'method' => 'GET',
+        'pattern' => '/admin/sites',
+        'tag' => 'Site-Verbindungen',
+        'summary' => 'Verbundene Sites, ihre Keys und der Erzwingungsmodus',
+        'description' => 'Der Bestand aller öffentlichen Sites (Landingpage, Blog, Tools, Login '
+            . 'plus frei angelegte) mit ihren Site-Keys, dem CORS-Zustand jeder Origin, '
+            . 'den von den Modulen gemeldeten geschützten Pfad-Präfixen und dem Zähler '
+            . 'des `warn`-Modus. Ein Key erscheint nur mit Präfix, Erzeugung und '
+            . '„zuletzt gesehen" — der Klartext existiert ausschließlich in der Antwort '
+            . 'von `POST /admin/sites` und ist danach nicht wiederherstellbar. '
+            . 'Widerrufene Keys bleiben gelistet und sind markiert: dass eine Site einen '
+            . 'Key hatte und wann er widerrufen wurde, ist genau die Frage, für die es '
+            . 'diese Seite gibt.',
+        'auth' => 'admin',
+        'responses' => [
+            [
+                'status' => 200,
+                'description' => '`{sites, enforcement, modes, protected_routes, unkeyed, store_available}`',
+                'example' => '{"sites":[{"id":"blog","label":"Blog","known":true,'
+                    . '"origins":[{"origin":"https://blog.tracht-digital.de","cors":"baseline"}],'
+                    . '"keys":[{"id":3,"key_prefix":"tdsk_blog_A1b2","last_used_at":"2026-08-23 09:14:02"}]}],'
+                    . '"enforcement":"warn","protected_routes":["/content/blog"],"store_available":true}',
+            ],
+            ['status' => 401, 'description' => 'Keine Sitzung.'],
+            ['status' => 403, 'description' => 'Angemeldet, aber kein Admin.'],
+        ],
+    ],
+    [
+        'method' => 'POST',
+        'pattern' => '/admin/sites',
+        'tag' => 'Site-Verbindungen',
+        'summary' => 'Site-Key erzeugen (Klartext nur hier)',
+        'description' => 'Erzeugt einen Key für eine bekannte oder zuvor angelegte Site. '
+            . 'Gespeichert wird nur ein SHA-256-Hash, der Klartext steht **einmalig** in '
+            . 'dieser Antwort. Für eine unbekannte Site wird der Aufruf abgelehnt statt '
+            . 'sie zu erfinden: ein Key ohne erklärte Site passt zu keinem Build und zu '
+            . 'keiner Origin und stünde nur konfiguriert aussehend in der Liste.',
+        'auth' => 'admin',
+        'params' => [
+            ['in' => 'body', 'name' => 'site', 'type' => 'string', 'required' => true, 'description' => 'Site-Kennung, z. B. `blog`.'],
+            ['in' => 'body', 'name' => 'label', 'type' => 'string', 'description' => 'Freier Name; leer = Name der Site.'],
+        ],
+        'responses' => [
+            ['status' => 201, 'description' => '`{ok: true, id, site, key, key_prefix}` — `key` ist der Klartext.'],
+            ['status' => 401, 'description' => 'Keine Sitzung.'],
+            ['status' => 403, 'description' => 'Angemeldet, aber kein Admin.'],
+            ['status' => 422, 'description' => '`site` fehlt oder ist unbekannt.'],
+            ['status' => 503, 'description' => 'Keine Datenbank konfiguriert.'],
+        ],
+    ],
+    [
+        'method' => 'PUT',
+        'pattern' => '/admin/sites',
+        'tag' => 'Site-Verbindungen',
+        'summary' => 'Erzwingungsmodus und eigene Sites speichern',
+        'description' => '`enforcement` ist absichtlich dreiwertig: `off` (Vorgabe, Verhalten '
+            . 'jeder Installation vor diesem Feature), `warn` (wird ausgeliefert, aber '
+            . 'gezählt und protokolliert) und `enforce` (401). Der direkte Sprung von '
+            . '`off` auf `enforce` bricht genau die Site, die man vergessen hat — und '
+            . 'zwar unsichtbar, weil jeder Build-Zeit-Abruf fail-soft ist und die '
+            . 'gebackenen Rückfallinhalte ausliefert. `warn` ist der Weg dazwischen. '
+            . 'Abgelehnte eigene Sites kommen mit Begründung zurück.',
+        'auth' => 'admin',
+        'params' => [
+            ['in' => 'body', 'name' => 'enforcement', 'type' => 'off|warn|enforce', 'description' => 'Neuer Modus.'],
+            ['in' => 'body', 'name' => 'sites', 'type' => 'array', 'description' => 'Eigene Sites: `{id, label, origins}`.'],
+            ['in' => 'body', 'name' => 'reset_unkeyed', 'type' => 'bool', 'description' => 'Setzt den `warn`-Zähler zurück.'],
+        ],
+        'responses' => [
+            ['status' => 200, 'description' => '`{ok: true, enforcement, sites, rejected}`'],
+            ['status' => 401, 'description' => 'Keine Sitzung.'],
+            ['status' => 403, 'description' => 'Angemeldet, aber kein Admin.'],
+            ['status' => 422, 'description' => 'Unbekannter Modus oder `sites` ist keine Liste.'],
+            ['status' => 503, 'description' => 'Keine Datenbank konfiguriert.'],
+        ],
+    ],
+    [
+        'method' => 'DELETE',
+        'pattern' => '/admin/sites/{id:[0-9]+}',
+        'tag' => 'Site-Verbindungen',
+        'summary' => 'Site-Key widerrufen',
+        'description' => 'Markiert den Key als widerrufen; die Zeile bleibt bestehen. Ab sofort '
+            . 'wird er nicht mehr akzeptiert — der Build, der ihn noch trägt, scheitert '
+            . 'beim nächsten Lauf laut, statt still auf Rückfallinhalte zu wechseln.',
+        'auth' => 'admin',
+        'params' => [
+            ['in' => 'path', 'name' => 'id', 'type' => 'int', 'required' => true, 'description' => 'Zeilen-Id des Keys.'],
+        ],
+        'responses' => [
+            ['status' => 200, 'description' => '`{ok: true}`'],
+            ['status' => 401, 'description' => 'Keine Sitzung.'],
+            ['status' => 403, 'description' => 'Angemeldet, aber kein Admin.'],
+            ['status' => 404, 'description' => 'Unbekannt oder bereits widerrufen.'],
+        ],
+    ],
+    [
+        'method' => 'POST',
+        'pattern' => '/sites/handshake',
+        'tag' => 'Site-Verbindungen',
+        'summary' => 'Site meldet sich mit ihrem Key an (öffentlich)',
+        'description' => 'Der Schritt, den der `/install`-Assistent auf jeder öffentlichen Site '
+            . 'ausführt. Öffentlich aus Notwendigkeit: er läuft im Browser des Betreibers '
+            . 'auf der Domain der Site, bevor irgendetwas verbunden ist. Der Key steht im '
+            . '**Body** — nicht im Header (kein zusätzlicher Preflight) und nicht in der '
+            . 'Query (ein Zugangsdatum im Zugriffsprotokoll überlebt seinen Zweck). '
+            . 'Vermerkt „zuletzt gesehen", die Origin und die veröffentlichte `apiBase`; '
+            . 'das ist der einzige Moment, in dem die API erfährt, dass es diese Site '
+            . 'gibt. `cors` meldet den Zustand der **anfragenden** Origin, nicht der beim '
+            . 'Key hinterlegten — sonst wäre die Auskunft auf einem Staging-Host '
+            . 'überzeugend falsch.',
+        'auth' => 'token',
+        'params' => [
+            ['in' => 'body', 'name' => 'key', 'type' => 'string', 'required' => true, 'description' => 'Der Site-Key im Klartext.'],
+            ['in' => 'body', 'name' => 'site', 'type' => 'string', 'description' => 'Erwartete Site-Kennung; passt sie nicht, wird abgelehnt.'],
+            ['in' => 'body', 'name' => 'apiBase', 'type' => 'string', 'description' => 'Die von der Site veröffentlichte API-Basis.'],
+        ],
+        'responses' => [
+            [
+                'status' => 200,
+                'description' => '`{ok: true, site, label, cors: "allowed"|"missing", origin}`',
+                'example' => '{"ok":true,"site":"blog","label":"Blog","cors":"allowed",'
+                    . '"origin":"https://blog.tracht-digital.de"}',
+            ],
+            ['status' => 401, 'description' => 'Key unbekannt, widerrufen oder für eine andere Site.'],
+        ],
+    ],
+    [
         'method' => 'POST',
         'pattern' => '/admin/modules/check',
         'tag' => 'Module',
