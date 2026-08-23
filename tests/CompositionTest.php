@@ -41,7 +41,12 @@ final class CompositionTest extends TestCase
         );
         self::assertContains('time:read', $ids);
         self::assertContains('lexware:read', $ids);
-        self::assertContains('customers:read', $ids);
+        // `companies:read`, not `customers:read`: the customers extension renamed
+        // its permissions with the company directory and keeps the old spelling
+        // only as an inbound alias for tokens issued before the rename. This
+        // catalog is the authoritative list an enforcing service publishes, so it
+        // carries the current name.
+        self::assertContains('companies:read', $ids);
         self::assertContains('billing:read', $ids);
     }
 

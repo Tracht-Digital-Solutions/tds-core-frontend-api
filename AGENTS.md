@@ -276,6 +276,40 @@ make the updater deploy continuously.
 
 ## Load-bearing gotchas (carried from the four APIs)
 
+- **A module must NEVER guard its container bindings with `!$c->has(X::class)`,
+  and `ExtensionBindingsTest` is what enforces it.** PHP-DI answers `has()` out
+  of its definition sources, and **autowiring is one of them** — so for any
+  concrete, instantiable class the answer is always `true`, bound or not. Six of
+  the thirteen composed modules opened `register()` with
+
+  ```php
+  if ($c !== null && !$c->has(SomeRepository::class)) { $c->set(…); … }
+  ```
+
+  and therefore bound **nothing**; the container autowired instead. Where the
+  constructor takes only the bound `PDO` that is invisible (identical object),
+  which is exactly why it survived so long. Where it takes a **string** it is
+  fatal, and only on the routes that resolve it:
+
+  | Module | Entry | Dead route(s) |
+  |---|---|---|
+  | blog-cms | `TranslationSync` / `RebuildTrigger` | post save · delete · backfill |
+  | website-cms | `TranslationSync` / `RebuildTrigger` | block save · delete · backfill |
+  | billing | `StripeClient` | `GET /billing/summary` (dashboard widget) |
+  | lexware | `LexwareClient` | every Lexware Office call |
+  | support-tickets | `ImapTicketIngest` | `POST /tickets/ingest` |
+  | tools | `StripeClient` | premium checkout · Stripe webhook |
+
+  The shared symptom was `Parameter $x of __construct() has no value defined or
+  guessable` behind a **500**, with reads working perfectly — and, silently, the
+  settings-store factories in those closures never ran at all, so the DeepL,
+  rebuild, Stripe and Lexware keys typed into *Einstellungen* were being ignored.
+  Nothing looked: the extension repos run type-check + build in CI rather than
+  tests, `CompositionTest` only asserts that routes are **mounted**, and a PHP-DI
+  entry is built lazily, so a broken binding costs nothing until a user saves.
+  A module owns the classes it binds and nothing else defines them — bind
+  unconditionally.
+
 - **CORS middleware is added AFTER `addRoutingMiddleware()`** (Slim is LIFO, so
   it must be outermost) or OPTIONS preflights get 405'd and browsers block every
   cross-origin request. `tests/PreflightTest.php` guards this through the REAL
@@ -490,8 +524,21 @@ after deploy.
 ## Tests
 
 ```bash
-composer test    # phpunit, 211 tests (27 skip without TDS_TEST_DB_DSN)
+composer test    # phpunit, 212 tests (27 skip without TDS_TEST_DB_DSN)
 ```
+
+`tests/ExtensionBindingsTest.php` is the net for the binding trap above. It
+reads the `$c->set(Foo::class, …)` calls straight out of every composed module's
+source in `vendor/tracht-digital-solutions/*/php/src/*Module.php` — resolving
+short names through that file's `use` imports — and asks the booted container
+for each one, so a new module or a new binding joins the check by existing
+rather than by being listed here. It fails **only** on
+`DI\Definition\Exception\InvalidDefinition`, the one error that means "PHP-DI had
+no definition it could build"; anything environmental (no database, no
+third-party service) is ignored, so the check needs no MariaDB. Where a database
+*is* reachable the factories run for real, which is the stronger check — but the
+connection is probed once and then stubbed out if it fails, because otherwise
+nearly every entry pays a full TCP timeout and a sub-second check takes a minute.
 
 > **One TestCase per file, named after the file.** PHPUnit's directory loader
 > only picks up the class whose name matches the filename, so a second TestCase
