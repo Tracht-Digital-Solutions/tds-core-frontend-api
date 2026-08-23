@@ -3,7 +3,7 @@
   "description": "Base panel API kernel (PHP 8 + Slim). Composes extension Modules in-process via frontend-contract into one app — the backend twin of core-frontend.",
   "type": "project",
   "license": "proprietary",
-  "version": "0.17.0",
+  "version": "0.17.1",
   "require": {
     "php": ">=8.2",
     "firebase/php-jwt": "^7.0",
@@ -27,7 +27,7 @@
     "tracht-digital-solutions/tds-ext-time-tracker": "*",
     "tracht-digital-solutions/tds-ext-tools": "*",
     "tracht-digital-solutions/tds-ext-website-cms": "*",
-    "tracht-digital-solutions/tds-frontend-contract": "^1.0.0",
+    "tracht-digital-solutions/tds-frontend-contract": "^1.9.0",
     "vlucas/phpdotenv": "^5.6"
   },
   "require-dev": {
