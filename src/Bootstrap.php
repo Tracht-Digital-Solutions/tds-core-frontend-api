@@ -24,6 +24,7 @@ use Tds\CoreFrontendApi\Middleware\SiteKeyMiddleware;
 use Tds\CoreFrontendApi\Service\ApiReference;
 use Tds\CoreFrontendApi\Service\AutoUpdater;
 use Tds\CoreFrontendApi\Service\CorsConfig;
+use Tds\CoreFrontendApi\Service\HttpSiteCache;
 use Tds\CoreFrontendApi\Service\MailConfig;
 use Tds\CoreFrontendApi\Service\ModuleUpdateConfig;
 use Tds\CoreFrontendApi\Service\NotificationFeed;
@@ -40,6 +41,7 @@ use Tds\Frontend\Contract\Email;
 use Tds\Frontend\Contract\Mailer;
 use Tds\Frontend\Contract\ModuleRegistry;
 use Tds\Frontend\Contract\SettingsStore as SettingsStoreContract;
+use Tds\Frontend\Contract\SiteCache;
 use Tds\Frontend\Contract\SiteKeys;
 use Tds\Frontend\Contract\UserContext;
 
@@ -1010,6 +1012,16 @@ final class Bootstrap
                 $config->fromName,
             );
         });
+
+        // The public sites' page cache. Bound here, like Mailer, so no
+        // extension holds an HTTP client, a token or a URL policy of its own —
+        // `RebuildTrigger` already exists three times near byte-identically,
+        // and every fix to it has to be made three times.
+        //
+        // It never throws: a site that is down must not turn "save this
+        // article" into an error. Stateless and cheap to construct, so it does
+        // not need the lazy treatment the DB-touching bindings do.
+        $container->set(SiteCache::class, static fn (): SiteCache => new HttpSiteCache());
 
         // The default binding is anonymous; AuthMiddleware rebinds it per
         // request to a JwtUserContext when a valid token is presented.

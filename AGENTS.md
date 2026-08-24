@@ -407,6 +407,28 @@ make the updater deploy continuously.
 `Bootstrap::container()` binds the services extensions resolve via
 `$app->getContainer()->get(...)` — all lazy (boot does no DB/SMTP work):
 - **`PDO`** — the shared DB connection (env `DB_*`).
+- **`SiteCache`** (frontend-contract, `Service\HttpSiteCache`) — asks a public site to
+  re-render the cached HTML of the pages one content change affects. The three public
+  sites render on demand behind a file-backed page cache, so a saved block, post or
+  guide is invisible until its page is rendered again. Bound here so no extension
+  holds an HTTP client, a token or a URL policy of its own — `RebuildTrigger` already
+  exists three times near byte-identically, and every fix to it has to be made three
+  times.
+  > **It never throws and never fails a save.** A site that is down, moved or simply
+  > not configured yet must not turn "save this article" into an error: the content is
+  > stored either way, the public page stays a little stale, and the panel has a
+  > rebuild button to catch up. Failures go to `error_log`.
+  >
+  > **Two details that are easy to get wrong.** `Content-Type: application/json` is
+  > mandatory — the receiving endpoint is an Astro route and its `security.checkOrigin`
+  > rejects a form-ish cross-site POST as CSRF, with a message that names neither
+  > content types nor the fix. And the timeouts are short on purpose: this runs inside
+  > the request that saved the content, so a site that accepts a connection and then
+  > hangs would hold the editor's save open until PHP's own limit.
+  >
+  > Not to be confused with the CMS modules' `RebuildTrigger`, which dispatches a CI
+  > build and ships *code*. Both exist because both jobs exist. Operator handbook:
+  > `SITES.md`.
 - **`Mailer`** (frontend-contract) — SMTP via Symfony Mailer, configured
   **DB-first with `MAIL_DSN` as the env fallback** (`Service\MailConfig`,
   settings namespace `mail`); nothing configured → `NullMailer`
