@@ -24,7 +24,7 @@ use Tds\Frontend\Contract\SiteCache;
  * page stays a little stale, and the panel has a rebuild button to catch up.
  * Failures go to `error_log`, exactly like the CMS extensions' RebuildTrigger.
  *
- * ### Two details that are easy to get wrong
+ * ### Three details that are easy to get wrong
  *
  * - **`Content-Type: application/json` is mandatory**, not cosmetic. The
  *   receiving endpoint is an Astro route, and Astro's `security.checkOrigin`
@@ -34,6 +34,11 @@ use Tds\Frontend\Contract\SiteCache;
  * - **The timeouts are short and deliberate.** This runs inside the request
  *   that saved the content. A site that accepts a connection and then hangs
  *   would otherwise hold the editor's save open until PHP's own limit.
+ * - **Redirects are refused.** The request carries the secret
+ *   `X-TDS-Cache-Token` as an ordinary custom header. libcurl reuses custom
+ *   headers on redirected requests, including a redirect to another host, so
+ *   following one would hand that host the token. Cache URLs are configured as
+ *   exact origins; an http-to-https move must be saved as the https origin.
  */
 final class HttpSiteCache implements SiteCache
 {
@@ -102,7 +107,7 @@ final class HttpSiteCache implements SiteCache
     }
 
     /**
-     * Trim a configured base URL to a scheme + host, or null when unusable.
+     * Trim a configured base URL to an HTTP(S) origin, or null when unusable.
      *
      * A trailing slash is the commonest thing an operator pastes, and
      * `https://blog.example.de//tds/cache/rebuild` is not the same path — the
@@ -111,15 +116,36 @@ final class HttpSiteCache implements SiteCache
      */
     private static function normaliseBase(string $baseUrl): ?string
     {
-        $trimmed = rtrim(trim($baseUrl), '/');
-        if ($trimmed === '') {
+        $trimmed = trim($baseUrl);
+        if (
+            $trimmed === ''
+            || preg_match('/[\x00-\x20\x7f]/', $trimmed) === 1
+            || filter_var($trimmed, FILTER_VALIDATE_URL) === false
+        ) {
             return null;
         }
-        $scheme = parse_url($trimmed, PHP_URL_SCHEME);
-        if ($scheme !== 'http' && $scheme !== 'https') {
+
+        $parts = parse_url($trimmed);
+        if (!is_array($parts)) {
             return null;
         }
-        return $trimmed;
+        $scheme = strtolower((string) ($parts['scheme'] ?? ''));
+        $host = strtolower((string) ($parts['host'] ?? ''));
+        $path = (string) ($parts['path'] ?? '');
+        if (
+            ($scheme !== 'http' && $scheme !== 'https')
+            || $host === ''
+            || isset($parts['user'])
+            || isset($parts['pass'])
+            || isset($parts['query'])
+            || isset($parts['fragment'])
+            || ($path !== '' && preg_match('#^/+$#', $path) !== 1)
+        ) {
+            return null;
+        }
+
+        $port = isset($parts['port']) ? ':' . (int) $parts['port'] : '';
+        return $scheme . '://' . $host . $port;
     }
 
     /** @return array{status:int,error:string} */
@@ -137,10 +163,10 @@ final class HttpSiteCache implements SiteCache
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_CONNECTTIMEOUT => self::CONNECT_TIMEOUT,
             CURLOPT_TIMEOUT => self::TIMEOUT,
-            // Follow a panel-configured http→https redirect, but never more
-            // than a couple: a redirect loop here would burn the whole timeout.
-            CURLOPT_FOLLOWLOCATION => true,
-            CURLOPT_MAXREDIRS => 3,
+            // NEVER follow: CURLOPT_HTTPHEADER custom headers are reused on a
+            // redirected request, including to another host. This one carries
+            // the cache token. An http→https move must be configured directly.
+            CURLOPT_FOLLOWLOCATION => false,
         ]);
 
         $ok = curl_exec($ch);

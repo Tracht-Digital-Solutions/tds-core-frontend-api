@@ -32,20 +32,28 @@ paths without it).
 
 ## Status
 
-**Composes all 12 extensions and is deployed via the gateway** (cut over 2026-07-22).
+**Composes all 13 extensions and is deployed via the gateway** (cut over 2026-07-22).
 `Modules::enabled()` returns the union both products need — time-tracker, customers,
 billing, lexware, tools, messages, projects, documents, support-tickets, contact-tickets,
-website-cms, blog-cms. Ported and live: RS256 JWT/JWKS verify, the admin API
+website-cms, blog-cms, **live-chat-cta**. Ported and live: RS256 JWT/JWKS verify, the admin API
 reference (`/wiki.json` — introspected routes joined with each module's `ApiDocSource`
 prose, grouped by the module that mounted them),
 email (`Mailer`), the in-process auto-migrator, the runtime settings store, per-user
 dashboard layout, and the **public content-delivery read surface** (`/content/blog*`,
 `/content/topics`, `/content/snippets`, `/content/landing`) the public blog/landingpage
-build-fetch. `tests/CompositionTest` validates it end-to-end (all 12 mount; public routes
-are unauthenticated; 40 tests green).
+build-fetch. `tests/CompositionTest` validates it end-to-end (all 13 mount and public
+routes are unauthenticated).
+
+The base also owns `HttpSiteCache`, which sends content-change events to the
+public sites' page-cache endpoint. Cache addresses are exact HTTP(S) origins;
+credentials, paths, queries and fragments are rejected. Redirects are never
+followed because the request carries `X-TDS-Cache-Token`, and libcurl would
+reuse that custom secret header on a redirected request to another host. The
+blog and website CMS store their tokens encrypted at runtime; `BLOG_CACHE_TOKEN`
+and `WEBSITE_CACHE_TOKEN` are optional `.env` fallbacks for existing hosts.
 
 **Deployment:** this repo has **no CI of its own** — it is bundled as the `frontend`
-service by `tds-gateway-api`'s `_assemble.yml` (which checks out this repo + all 12
+service by `tds-gateway-api`'s `_assemble.yml` (which checks out this repo + all 13
 extension repos and mirrors their Composer `path` packages into `vendor/`). The gateway
 routes everything except `/auth` + `/customer` here. Local dev resolves the extensions via
 `path` repos; local phpunit is the gate.

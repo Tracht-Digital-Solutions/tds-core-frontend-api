@@ -63,6 +63,43 @@ final class HttpSiteCacheTest extends TestCase
         self::assertSame('https://blog.tracht-digital.de/tds/cache/rebuild', $this->sent[0]['url']);
     }
 
+    public function testAcceptsOnlyAnOriginWithoutCredentialsPathQueryOrFragment(): void
+    {
+        $cache = $this->cache();
+        $events = [new CacheEvent('post', 'x')];
+
+        foreach ([
+            'https://user:secret@blog.tracht-digital.de',
+            'https://blog.tracht-digital.de/subdirectory',
+            'https://blog.tracht-digital.de?next=https://attacker.example',
+            'https://blog.tracht-digital.de#fragment',
+            'https://blog.tracht-digital.de\\subdirectory',
+            "https://blog.tracht-digital.de\n.evil.example",
+        ] as $base) {
+            self::assertFalse($cache->isConfigured($base, 'tok'), $base);
+            $cache->rebuild($base, 'tok', $events);
+        }
+
+        self::assertSame([], $this->sent);
+    }
+
+    public function testNormalisesOriginCaseAndRepeatedTrailingSlashes(): void
+    {
+        $this->cache()->rebuild('HTTPS://BLOG.TRACHT-DIGITAL.DE///', 'tok', [new CacheEvent('post', 'x')]);
+        self::assertSame('https://blog.tracht-digital.de/tds/cache/rebuild', $this->sent[0]['url']);
+    }
+
+    public function testCurlTransportNeverFollowsARedirectWithTheSecretHeader(): void
+    {
+        // CURLOPT_HTTPHEADER is reused by libcurl after redirects, including a
+        // redirect to another host. Source-level because the injected test
+        // transport intentionally sits above curl itself.
+        $source = file_get_contents(__DIR__ . '/../src/Service/HttpSiteCache.php');
+        self::assertIsString($source);
+        self::assertStringContainsString('CURLOPT_FOLLOWLOCATION => false', $source);
+        self::assertStringNotContainsString('CURLOPT_MAXREDIRS', $source);
+    }
+
     public function testSendsNothingWhenTheSiteIsNotConfigured(): void
     {
         $cache = $this->cache();

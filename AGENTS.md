@@ -89,6 +89,13 @@ shared `app_setting` table via the core PDO); the DeepL/rebuild env vars stay th
 fallback. The **base itself** uses two namespaces: `modules` (Module & Deployment)
 and `mail` (SMTP, see *Core services for modules*).
 
+The public page-cache tokens follow that same contract: blog-cms reads
+`blog-cms/cache_token` with `BLOG_CACHE_TOKEN` as fallback, and website-cms
+reads `website-cms/cache_token` with `WEBSITE_CACHE_TOKEN` as fallback. Both
+belong in this service's `.env.example` even though their code lives in composed
+extensions; the gateway parity list marks them runtime-configured, so the web
+installer deliberately does not ask for either secret.
+
 ## Site connections / site keys (`/admin/sites`, `POST /sites/handshake`)
 
 The credential that binds a public static site (landingpage / blog / tools /
@@ -419,12 +426,23 @@ make the updater deploy continuously.
   > stored either way, the public page stays a little stale, and the panel has a
   > rebuild button to catch up. Failures go to `error_log`.
   >
-  > **Two details that are easy to get wrong.** `Content-Type: application/json` is
+  > **Three details that are easy to get wrong.** `Content-Type: application/json` is
   > mandatory — the receiving endpoint is an Astro route and its `security.checkOrigin`
   > rejects a form-ish cross-site POST as CSRF, with a message that names neither
   > content types nor the fix. And the timeouts are short on purpose: this runs inside
   > the request that saved the content, so a site that accepts a connection and then
   > hangs would hold the editor's save open until PHP's own limit.
+  >
+  > **The cache URL is an exact HTTP(S) ORIGIN and redirects are forbidden
+  > (0.18.1).** Userinfo, a path, query or fragment makes it unconfigured; a
+  > trailing slash is the only tolerated path syntax. The request carries the
+  > secret `X-TDS-Cache-Token` as a normal custom curl header, and libcurl
+  > reuses custom headers on followed redirects — including a redirect to a
+  > different host. `CURLOPT_FOLLOWLOCATION` therefore stays explicitly
+  > `false`. An http→https migration must update the stored origin; never
+  > restore redirect following as a convenience. `HttpSiteCacheTest` pins both
+  > the origin parser and the curl option because the injected transport sits
+  > above curl and cannot observe its redirect behavior.
   >
   > Not to be confused with the CMS modules' `RebuildTrigger`, which dispatches a CI
   > build and ships *code*. Both exist because both jobs exist. Operator handbook:
@@ -484,7 +502,8 @@ make the updater deploy continuously.
   > service's settings — `.env.example` now documents the support-tickets
   > mailbox (`TICKET_ADMIN_EMAIL`, `TICKET_UPLOAD_DIR`, `INGEST_TOKEN`,
   > `IMAP_*`, `TICKET_INGEST_*`) that `tds-ext-support-tickets-pkg` has read
-  > since it was ported, and never mentioned here. All of them are a *fallback*
+  > since it was ported, plus the blog/website page-cache fallbacks
+  > (`BLOG_CACHE_TOKEN`, `WEBSITE_CACHE_TOKEN`). All of them are a *fallback*
   > now: the mailbox is configured under Einstellungen → Support-Tickets →
   > E-Mail-Eingang through the runtime settings store, so they are listed in the
   > parity script's `DEFAULTED` table rather than written by `install.php`.
