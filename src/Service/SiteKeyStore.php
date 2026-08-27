@@ -70,18 +70,44 @@ final class SiteKeyStore implements SiteKeys
      */
     public function issue(string $site, string $label = '', string $origin = ''): array
     {
+        return $this->issueScoped($site, $label, $origin, null, null, [], []);
+    }
+
+    /**
+     * @param array<string,mixed> $bindings
+     * @param list<string> $scopes
+     * @return array{id: int, key: string, key_prefix: string}
+     */
+    public function issueScoped(
+        string $site,
+        string $label,
+        string $origin,
+        ?string $resourceType,
+        ?string $resourceId,
+        array $bindings,
+        array $scopes,
+    ): array
+    {
         $this->ensureSchema();
 
         $slug = self::slug($site);
         $key = self::KEY_PREFIX . $slug . '_' . self::randomSecret();
         $stmt = $this->pdo->prepare(
-            'INSERT INTO app_site_key (site, label, origin, key_prefix, key_hash, created_at)
-             VALUES (:site, :label, :origin, :prefix, :hash, NOW())'
+            'INSERT INTO app_site_key
+                (site, label, origin, resource_type, resource_id, bindings_json, scopes_json,
+                 key_prefix, key_hash, created_at)
+             VALUES
+                (:site, :label, :origin, :resource_type, :resource_id, :bindings, :scopes,
+                 :prefix, :hash, NOW())'
         );
         $stmt->execute([
             ':site' => $site,
             ':label' => $label,
             ':origin' => $origin,
+            ':resource_type' => $resourceType,
+            ':resource_id' => $resourceId,
+            ':bindings' => json_encode((object) $bindings, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+            ':scopes' => json_encode(array_values($scopes), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
             ':prefix' => substr($key, 0, self::PREFIX_LEN),
             ':hash' => hash('sha256', $key),
         ]);
@@ -103,7 +129,8 @@ final class SiteKeyStore implements SiteKeys
         try {
             $this->ensureSchema();
             $stmt = $this->pdo->prepare(
-                'SELECT id, site, label, origin FROM app_site_key
+                'SELECT id, site, label, origin, resource_type, resource_id, bindings_json, scopes_json
+                   FROM app_site_key
                  WHERE key_hash = :hash AND revoked_at IS NULL LIMIT 1'
             );
             $stmt->execute([':hash' => hash('sha256', $key)]);
@@ -126,12 +153,23 @@ final class SiteKeyStore implements SiteKeys
         }
 
         $this->touch((int) $row['id'], $origin, null);
+        try {
+            $this->pdo->prepare(
+                'UPDATE app_site_connection SET last_seen_at = NOW() WHERE site_key_id = :id'
+            )->execute([':id' => (int) $row['id']]);
+        } catch (\Throwable) {
+            // The connection table is additive; an older schema still verifies.
+        }
 
         return new SiteKeyIdentity(
             (int) $row['id'],
             (string) $row['site'],
             (string) ($row['label'] ?? ''),
             (string) ($row['origin'] ?? ''),
+            $row['resource_type'] !== null ? (string) $row['resource_type'] : null,
+            $row['resource_id'] !== null ? (string) $row['resource_id'] : null,
+            self::decodeObject((string) ($row['bindings_json'] ?? '')),
+            self::decodeList((string) ($row['scopes_json'] ?? '')),
         );
     }
 
@@ -185,7 +223,8 @@ final class SiteKeyStore implements SiteKeys
         try {
             $this->ensureSchema();
             $rows = $this->pdo->query(
-                'SELECT id, site, label, origin, key_prefix, created_at,
+                'SELECT id, site, label, origin, resource_type, resource_id, bindings_json, scopes_json,
+                        key_prefix, created_at,
                         last_used_at, last_used_origin, last_used_api_base, revoked_at
                    FROM app_site_key ORDER BY created_at DESC, id DESC'
             )->fetchAll();
@@ -200,6 +239,10 @@ final class SiteKeyStore implements SiteKeys
                 'site' => (string) $r['site'],
                 'label' => (string) ($r['label'] ?? ''),
                 'origin' => (string) ($r['origin'] ?? ''),
+                'resource_type' => $r['resource_type'] !== null ? (string) $r['resource_type'] : null,
+                'resource_id' => $r['resource_id'] !== null ? (string) $r['resource_id'] : null,
+                'bindings' => self::decodeObject((string) ($r['bindings_json'] ?? '')),
+                'scopes' => self::decodeList((string) ($r['scopes_json'] ?? '')),
                 'key_prefix' => (string) $r['key_prefix'],
                 'created_at' => (string) $r['created_at'],
                 'last_used_at' => $r['last_used_at'] !== null ? (string) $r['last_used_at'] : null,
@@ -239,6 +282,10 @@ final class SiteKeyStore implements SiteKeys
                 site VARCHAR(64) NOT NULL,
                 label VARCHAR(120) NOT NULL DEFAULT \'\',
                 origin VARCHAR(191) NOT NULL DEFAULT \'\',
+                resource_type VARCHAR(32) NULL,
+                resource_id VARCHAR(191) NULL,
+                bindings_json TEXT NULL,
+                scopes_json TEXT NULL,
                 key_prefix VARCHAR(24) NOT NULL,
                 key_hash CHAR(64) NOT NULL,
                 created_at DATETIME NOT NULL,
@@ -258,5 +305,22 @@ final class SiteKeyStore implements SiteKeys
     public static function resetSchemaFlagForTests(): void
     {
         self::$schemaEnsured = false;
+    }
+
+    /** @return array<string,mixed> */
+    private static function decodeObject(string $json): array
+    {
+        try {
+            $value = json_decode($json, true, 32, JSON_THROW_ON_ERROR);
+            return is_array($value) ? $value : [];
+        } catch (\Throwable) {
+            return [];
+        }
+    }
+
+    /** @return list<string> */
+    private static function decodeList(string $json): array
+    {
+        return array_values(array_map('strval', self::decodeObject($json)));
     }
 }

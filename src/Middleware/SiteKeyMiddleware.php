@@ -11,6 +11,7 @@ use Psr\Http\Server\RequestHandlerInterface;
 use Slim\Psr7\Response;
 use Tds\CoreFrontendApi\Service\SiteKeyPolicy;
 use Tds\Frontend\Contract\SettingsStore as SettingsStoreContract;
+use Tds\Frontend\Contract\SiteConnectionIdentity;
 use Tds\Frontend\Contract\SiteKeys;
 use Tds\Frontend\Contract\UserContext;
 
@@ -74,6 +75,9 @@ final class SiteKeyMiddleware implements MiddlewareInterface
 
     public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
     {
+        // The container lives for the worker lifetime. Reset first so a key
+        // from the previous request can never bleed into the next one.
+        $this->container->set(SiteConnectionIdentity::class, new SiteConnectionIdentity());
         $path = $request->getUri()->getPath();
         if ($this->protectedPrefixes === [] || !self::matches($path, $this->protectedPrefixes)) {
             return $handler->handle($request);
@@ -94,7 +98,16 @@ final class SiteKeyMiddleware implements MiddlewareInterface
         $presented = self::extractKey($request);
         if ($presented !== null) {
             $origin = $request->getHeaderLine('Origin');
-            if ($keys->verify($presented, null, $origin !== '' ? $origin : null) !== null) {
+            $identity = $keys->verify($presented, null, $origin !== '' ? $origin : null);
+            if ($identity !== null && $identity->allows($path)) {
+                $this->container->set(SiteConnectionIdentity::class, new SiteConnectionIdentity(
+                    $identity->id,
+                    $identity->site,
+                    $identity->resourceType,
+                    $identity->resourceId,
+                    $identity->bindings,
+                    $identity->scopes,
+                ));
                 return $handler->handle($request);
             }
         }
@@ -224,11 +237,9 @@ final class SiteKeyMiddleware implements MiddlewareInterface
         $response = new Response(401);
         $response->getBody()->write(json_encode([
             'error' => $presented ? 'Invalid site key' : 'Site key required',
-            // Named explicitly so a failing build says what to do. The fetch is
-            // fail-soft on the other end; without this the site would render its
-            // baked fallbacks and report success.
-            'hint' => 'Einen Site-Key im Admin-Portal unter Einstellungen → Site-Verbindungen erzeugen '
-                . 'und als TDS_SITE_KEY im Build hinterlegen.',
+            // Pairing provisions the server-side credential. The browser and a
+            // repository secret are deliberately not part of that path.
+            'hint' => 'Die Site in den Einstellungen des zugehörigen CMS erneut mit der API verbinden.',
         ], JSON_THROW_ON_ERROR));
 
         return $response->withHeader('Content-Type', 'application/json');

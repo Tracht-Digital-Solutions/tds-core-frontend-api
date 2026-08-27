@@ -127,7 +127,7 @@ final class ApiReferenceTest extends TestCase
             self::assertNotSame('', trim((string) $doc['summary']), "Leere Zusammenfassung: {$where}");
             self::assertContains(
                 $doc['auth'] ?? 'public',
-                ['public', 'session', 'permission', 'admin', 'token'],
+                ['public', 'session', 'permission', 'admin', 'token', 'pairing-token', 'finalize-token'],
                 "Unbekannter auth-Wert: {$where}",
             );
             foreach ($doc['params'] ?? [] as $param) {

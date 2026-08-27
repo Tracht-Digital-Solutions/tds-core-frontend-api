@@ -4,6 +4,8 @@ declare(strict_types=1);
 namespace Tds\CoreFrontendApi\Service;
 
 use Tds\Frontend\Contract\CacheEvent;
+use Tds\Frontend\Contract\CacheResult;
+use Tds\Frontend\Contract\ReportingSiteCache;
 use Tds\Frontend\Contract\SiteCache;
 
 /**
@@ -18,11 +20,10 @@ use Tds\Frontend\Contract\SiteCache;
  *
  * ### What it does NOT do
  *
- * It never throws, never retries and never reports failure to the caller.
- * A site that is down, moved or simply not configured yet must not turn "save
- * this article" into an error: the article is saved either way, the public
- * page stays a little stale, and the panel has a rebuild button to catch up.
- * Failures go to `error_log`, exactly like the CMS extensions' RebuildTrigger.
+ * It never throws and never retries. Instead it returns a truthful cache
+ * report. A site that is down, moved or simply not configured yet must not
+ * turn "save this article" into an error: the article is saved either way,
+ * while the response can still show that the public page stayed stale.
  *
  * ### Three details that are easy to get wrong
  *
@@ -40,7 +41,7 @@ use Tds\Frontend\Contract\SiteCache;
  *   following one would hand that host the token. Cache URLs are configured as
  *   exact origins; an http-to-https move must be saved as the https origin.
  */
-final class HttpSiteCache implements SiteCache
+final class HttpSiteCache implements ReportingSiteCache
 {
     /** Connect + total, in seconds. A rebuild renders pages, so allow some room. */
     private const CONNECT_TIMEOUT = 3;
@@ -61,24 +62,34 @@ final class HttpSiteCache implements SiteCache
 
     public function rebuild(string $baseUrl, ?string $token, array $events): void
     {
+        $this->rebuildWithResult($baseUrl, $token, $events);
+    }
+
+    public function rebuildWithResult(string $baseUrl, ?string $token, array $events): CacheResult
+    {
         $base = self::normaliseBase($baseUrl);
-        if ($base === null || $token === null || $token === '' || $events === []) {
+        if ($base === null || $token === null || $token === '') {
             // Not configured, or nothing to say. Silent on purpose: an
             // extension whose site has no cache URL yet would otherwise log on
             // every single save.
-            return;
+            return new CacheResult(CacheResult::NOT_CONFIGURED);
+        }
+        if ($events === []) {
+            return new CacheResult(CacheResult::SKIPPED);
+        }
+
+        $validEvents = array_values(array_filter($events, static fn ($event): bool => $event instanceof CacheEvent));
+        if ($validEvents === []) {
+            return new CacheResult(CacheResult::SKIPPED);
         }
 
         $payload = json_encode(
-            ['events' => array_map(
-                static fn (CacheEvent $e): array => $e->toArray(),
-                array_values(array_filter($events, static fn ($e): bool => $e instanceof CacheEvent)),
-            )],
+            ['events' => array_map(static fn (CacheEvent $event): array => $event->toArray(), $validEvents)],
             JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
         );
         if ($payload === false) {
             error_log('[tds-site-cache] could not encode the event payload');
-            return;
+            return new CacheResult(CacheResult::FAILED, failed: [['error' => 'encode_failed']]);
         }
 
         $url = $base . '/tds/cache/rebuild';
@@ -89,13 +100,32 @@ final class HttpSiteCache implements SiteCache
             'User-Agent: tds-core-frontend-api',
         ];
 
-        $result = $this->http !== null
-            ? ($this->http)($url, $headers, $payload)
-            : self::post($url, $headers, $payload);
+        try {
+            $result = $this->http !== null
+                ? ($this->http)($url, $headers, $payload)
+                : self::post($url, $headers, $payload);
+        } catch (\Throwable $error) {
+            error_log(sprintf('[tds-site-cache] rebuild at %s failed before response: %s', $url, $error->getMessage()));
+            return new CacheResult(CacheResult::FAILED, failed: [['status' => 0, 'error' => 'transport_failed']]);
+        }
 
         $status = (int) ($result['status'] ?? 0);
         if ($status >= 200 && $status < 300) {
-            return;
+            $decoded = json_decode((string) ($result['body'] ?? ''), true);
+            if (!is_array($decoded)) {
+                error_log(sprintf('[tds-site-cache] rebuild at %s returned invalid JSON', $url));
+                return new CacheResult(CacheResult::FAILED, failed: [['status' => $status, 'error' => 'invalid_response']]);
+            }
+
+            $rebuilt = self::stringList($decoded['rebuilt'] ?? []);
+            $skipped = self::stringList($decoded['skipped'] ?? []);
+            $failed = is_array($decoded['failed'] ?? null) ? array_values($decoded['failed']) : [];
+            $unknown = is_array($decoded['unknownEvents'] ?? null) ? array_values($decoded['unknownEvents']) : [];
+            $resultStatus = $failed !== [] || $unknown !== []
+                ? CacheResult::FAILED
+                : ($skipped !== [] ? CacheResult::SKIPPED : CacheResult::REFRESHED);
+
+            return new CacheResult($resultStatus, $rebuilt, $skipped, $failed, $unknown);
         }
 
         error_log(sprintf(
@@ -104,6 +134,19 @@ final class HttpSiteCache implements SiteCache
             $status,
             (string) ($result['error'] ?? ''),
         ));
+        return new CacheResult(CacheResult::FAILED, failed: [[
+            'status' => $status,
+            'error' => (string) ($result['error'] ?? ''),
+        ]]);
+    }
+
+    /** @return list<string> */
+    private static function stringList(mixed $value): array
+    {
+        if (!is_array($value)) {
+            return [];
+        }
+        return array_values(array_filter($value, static fn ($item): bool => is_string($item)));
     }
 
     /**
@@ -148,12 +191,12 @@ final class HttpSiteCache implements SiteCache
         return $scheme . '://' . $host . $port;
     }
 
-    /** @return array{status:int,error:string} */
+    /** @return array{status:int,error:string,body:string} */
     private static function post(string $url, array $headers, string $body): array
     {
         $ch = curl_init($url);
         if ($ch === false) {
-            return ['status' => 0, 'error' => 'curl_init failed'];
+            return ['status' => 0, 'error' => 'curl_init failed', 'body' => ''];
         }
 
         curl_setopt_array($ch, [
@@ -174,6 +217,6 @@ final class HttpSiteCache implements SiteCache
         $error = $ok === false ? (string) curl_error($ch) : '';
         curl_close($ch);
 
-        return ['status' => $status, 'error' => $error];
+        return ['status' => $status, 'error' => $error, 'body' => is_string($ok) ? $ok : ''];
     }
 }

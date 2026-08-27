@@ -8,7 +8,7 @@ use Tds\Frontend\Contract\SettingsStore as SettingsStoreContract;
 
 /**
  * Runtime settings store — a generic namespaced key/value table so third-party
- * config (DeepL keys, rebuild tokens, SMTP, …) is editable in the panel instead
+ * config (DeepL keys, Stripe credentials, SMTP, …) is editable in the panel instead
  * of being `.env`-only. Ports the services' `app_setting` model into the panel
  * platform.
  *

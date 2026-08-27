@@ -6,6 +6,7 @@ namespace Tds\CoreFrontendApi\Tests;
 use PHPUnit\Framework\TestCase;
 use Tds\CoreFrontendApi\Service\HttpSiteCache;
 use Tds\Frontend\Contract\CacheEvent;
+use Tds\Frontend\Contract\CacheResult;
 
 /**
  * The base's SiteCache implementation.
@@ -20,11 +21,15 @@ final class HttpSiteCacheTest extends TestCase
     /** @var list<array{url:string,headers:array,body:string}> */
     private array $sent = [];
 
-    private function cache(int $status = 200, string $error = ''): HttpSiteCache
+    private function cache(
+        int $status = 200,
+        string $error = '',
+        string $responseBody = '{"rebuilt":["/"],"skipped":[],"failed":[],"unknownEvents":[]}',
+    ): HttpSiteCache
     {
-        return new HttpSiteCache(function (string $url, array $headers, string $body) use ($status, $error): array {
+        return new HttpSiteCache(function (string $url, array $headers, string $body) use ($status, $error, $responseBody): array {
             $this->sent[] = ['url' => $url, 'headers' => $headers, 'body' => $body];
-            return ['status' => $status, 'error' => $error];
+            return ['status' => $status, 'error' => $error, 'body' => $responseBody];
         });
     }
 
@@ -143,6 +148,34 @@ final class HttpSiteCacheTest extends TestCase
         self::assertFalse($cache->isConfigured('https://blog.tracht-digital.de', ''));
         self::assertFalse($cache->isConfigured('', 'tok'));
         self::assertFalse($cache->isConfigured('nonsense', 'tok'));
+    }
+
+    public function testReportsPartialAndUnknownEventFailuresTruthfully(): void
+    {
+        $cache = $this->cache(200, '', json_encode([
+            'rebuilt' => ['/'],
+            'skipped' => ['/feed.xml'],
+            'failed' => [['path' => '/en', 'status' => 500]],
+            'unknownEvents' => [['type' => 'future']],
+        ], JSON_THROW_ON_ERROR));
+
+        $result = $cache->rebuildWithResult('https://blog.tracht-digital.de', 'tok', [new CacheEvent('post')]);
+        self::assertSame(CacheResult::FAILED, $result->status);
+        self::assertFalse($result->cached());
+        self::assertSame(['/'], $result->rebuilt);
+        self::assertCount(1, $result->failed);
+        self::assertCount(1, $result->unknownEvents);
+    }
+
+    public function testA2xxWithInvalidJsonIsNotReportedAsCached(): void
+    {
+        $result = $this->cache(200, '', '<html>proxy error</html>')->rebuildWithResult(
+            'https://blog.tracht-digital.de',
+            'tok',
+            [new CacheEvent('post')],
+        );
+        self::assertSame(CacheResult::FAILED, $result->status);
+        self::assertFalse($result->cached());
     }
 
     public function testIgnoresAnythingThatIsNotACacheEvent(): void

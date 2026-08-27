@@ -22,26 +22,31 @@ use Tds\CoreFrontendApi\Middleware\AuthMiddleware;
 use Tds\CoreFrontendApi\Middleware\CorsMiddleware;
 use Tds\CoreFrontendApi\Middleware\SiteKeyMiddleware;
 use Tds\CoreFrontendApi\Service\ApiReference;
-use Tds\CoreFrontendApi\Service\AutoUpdater;
+use Tds\CoreFrontendApi\Service\ConnectedSiteCacheService;
 use Tds\CoreFrontendApi\Service\CorsConfig;
 use Tds\CoreFrontendApi\Service\HttpSiteCache;
 use Tds\CoreFrontendApi\Service\MailConfig;
-use Tds\CoreFrontendApi\Service\ModuleUpdateConfig;
 use Tds\CoreFrontendApi\Service\NotificationFeed;
 use Tds\CoreFrontendApi\Service\NullMailer;
-use Tds\CoreFrontendApi\Service\PackageRegistry;
+use Tds\CoreFrontendApi\Service\PairingRateLimiter;
 use Tds\CoreFrontendApi\Service\SettingsStore;
+use Tds\CoreFrontendApi\Service\SiteConnectionStore;
 use Tds\CoreFrontendApi\Service\SiteKeyPolicy;
 use Tds\CoreFrontendApi\Service\SiteKeyStore;
+use Tds\CoreFrontendApi\Service\SitePairingException;
+use Tds\CoreFrontendApi\Service\SitePairingService;
 use Tds\CoreFrontendApi\Service\SmtpMailer;
-use Tds\CoreFrontendApi\Service\WorkflowDispatcher;
 use Tds\CoreFrontendApi\Support\AnonymousUserContext;
 use Tds\CoreFrontendApi\Support\MigrationRunner;
 use Tds\Frontend\Contract\Email;
 use Tds\Frontend\Contract\Mailer;
 use Tds\Frontend\Contract\ModuleRegistry;
 use Tds\Frontend\Contract\SettingsStore as SettingsStoreContract;
+use Tds\Frontend\Contract\ConnectedSiteCache;
+use Tds\Frontend\Contract\ReportingSiteCache;
 use Tds\Frontend\Contract\SiteCache;
+use Tds\Frontend\Contract\SiteConnectionIdentity;
+use Tds\Frontend\Contract\SiteConnections;
 use Tds\Frontend\Contract\SiteKeys;
 use Tds\Frontend\Contract\UserContext;
 
@@ -64,7 +69,7 @@ final class Bootstrap
 
         // DI container of the core services extensions may resolve (Mailer /
         // UserContext / PDO). Modules reach them via $app->getContainer().
-        $container = self::container();
+        $container = self::container($rootDir);
         AppFactory::setContainer($container);
         $app = AppFactory::create();
         $app->addBodyParsingMiddleware();
@@ -105,15 +110,6 @@ final class Bootstrap
         // every enabled extension's pending migrations (no proc_open/cron on the
         // prod host). No-op in tests/boot (no DB) and cheap once applied (marker).
         self::autoMigrate($rootDir, $registry);
-
-        // Unattended module updates. There is no cron on the prod host, so this
-        // piggybacks on request traffic exactly like the auto-migrator does: a
-        // single file read per request, and real work only once per configured
-        // interval. Gated on a DB being configured so tests and cold boot stay
-        // side-effect-free, and it never throws (see AutoUpdater::maybeRun).
-        if (self::env('DB_NAME', '') !== '') {
-            self::autoUpdater($container, $rootDir)->maybeRun();
-        }
 
         // --- Base kernel routes -------------------------------------------------
         // Never 5xx's — the gateway's aggregate health relies on the 200 + JSON
@@ -730,110 +726,84 @@ final class Bootstrap
             return $response->withHeader('Content-Type', 'application/json')->withHeader('Cache-Control', 'no-store');
         });
 
-        // --- Module inventory + update (admin) ----------------------------------
-        // The panel's Module page. The BUILD knows what is installed (each
-        // manifest's version, baked into the static product); this side supplies
-        // the two things a browser cannot: what the registry currently publishes
-        // (the token must never reach the client) and the ability to start the
-        // pipeline that puts a newer version into service.
-        //
-        // POST, not GET, because the package list is the input — the composed set
-        // is a property of the *frontend* build, which the API does not know.
-        $app->post('/admin/modules/check', function (Request $request, Response $response) use ($container, $rootDir): Response {
-            $denied = self::denyUnlessAdmin($container, $response);
-            if ($denied !== null) {
-                return $denied;
+        // A public site's server exchanges the ten-minute token received at
+        // POST /tds/connect. The token is never accepted in a query string and
+        // only its SHA-256 digest exists in the database.
+        $app->post('/sites/pairings/exchange', function (Request $request, Response $response) use ($container): Response {
+            $pairings = self::sitePairingService($container);
+            if ($pairings === null) {
+                return self::pairingError($response, new SitePairingException(
+                    'Site-Verbindungen benötigen eine konfigurierte Datenbank.',
+                    503,
+                    'pairing_unavailable',
+                ));
             }
-
-            $config = self::moduleUpdateConfig($container);
             $body = (array) $request->getParsedBody();
-            $inventory = is_array($body['inventory'] ?? null) ? $body['inventory'] : [];
-            $requested = is_array($body['packages'] ?? null)
-                ? $body['packages']
-                : array_map(static fn ($e): mixed => is_array($e) ? ($e['pkg'] ?? '') : '', $inventory);
-            $packages = array_values(array_filter(
-                array_map(static fn ($p): string => is_string($p) ? trim($p) : '', $requested),
-                static fn (string $p): bool => $p !== '' && PackageRegistry::isAllowed($p),
-            ));
-
-            // Remember the build-time inventory: the pinned ranges live in the
-            // product's package.json, which this API never sees, and the
-            // unattended updater needs them.
-            $updater = self::autoUpdater($container, $rootDir, $config);
-            if ($inventory !== []) {
-                $updater->rememberInventory($inventory);
+            try {
+                $payload = $pairings->exchange(
+                    (string) ($body['pairing_token'] ?? ''),
+                    (string) ($body['profile'] ?? ''),
+                    (string) ($body['origin'] ?? ''),
+                    self::requestOrigin($request),
+                );
+            } catch (SitePairingException $e) {
+                return self::pairingError($response, $e);
+            } catch (\Throwable) {
+                return self::pairingError($response, new SitePairingException(
+                    'Pairing konnte nicht ausgetauscht werden.',
+                    503,
+                    'pairing_unavailable',
+                ));
             }
-
-            $registry = new PackageRegistry($config->registryToken);
-            $versions = $registry->isConfigured() ? $registry->latestMany($packages) : [];
-
-            $response->getBody()->write(json_encode([
-                'auto' => $updater->state(),
-                'versions' => (object) $versions,
-                'registry' => [
-                    'configured' => $registry->isConfigured(),
-                    // Surfaced verbatim: "Token abgelehnt" and "Paket unbekannt"
-                    // need completely different fixes, and the admin is the one
-                    // who has to make them.
-                    'error' => $registry->lastError(),
-                ],
-                'targets' => $config->targets(),
-                'backend' => self::backendPackageVersions(),
-                'checked_at' => date('c'),
-            ], JSON_THROW_ON_ERROR));
-            return $response->withHeader('Content-Type', 'application/json');
+            $response->getBody()->write(json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+            return $response->withHeader('Content-Type', 'application/json')->withHeader('Cache-Control', 'no-store');
         });
 
-        // Run the unattended check NOW, regardless of schedule — the panel's
-        // "Jetzt prüfen und aktualisieren". `force` runs it even while the
-        // automation is switched off, so an admin can try it before enabling it.
-        $app->post('/admin/modules/auto-update', function (Request $request, Response $response) use ($container, $rootDir): Response {
-            $denied = self::denyUnlessAdmin($container, $response);
-            if ($denied !== null) {
-                return $denied;
+        // Phase two activates the pending key only after the site has written
+        // its private connection file. Repeating this call is safe and returns
+        // the already-active connection.
+        $app->post('/sites/pairings/finalize', function (Request $request, Response $response) use ($container): Response {
+            $pairings = self::sitePairingService($container);
+            if ($pairings === null) {
+                return self::pairingError($response, new SitePairingException(
+                    'Site-Verbindungen benötigen eine konfigurierte Datenbank.',
+                    503,
+                    'pairing_unavailable',
+                ));
             }
-            $updater = self::autoUpdater($container, $rootDir);
-            $report = $updater->run(true);
+            $body = (array) $request->getParsedBody();
+            try {
+                $connection = $pairings->finalize(
+                    (string) ($body['pairing_id'] ?? ''),
+                    (string) ($body['finalize_token'] ?? ''),
+                    (string) ($body['profile'] ?? ''),
+                    (string) ($body['origin'] ?? ''),
+                );
+            } catch (SitePairingException $e) {
+                return self::pairingError($response, $e);
+            } catch (\Throwable) {
+                return self::pairingError($response, new SitePairingException(
+                    'Pairing konnte nicht finalisiert werden.',
+                    503,
+                    'pairing_unavailable',
+                ));
+            }
             $response->getBody()->write(json_encode([
-                'report' => $report,
-                'auto' => $updater->state(),
-            ], JSON_THROW_ON_ERROR));
-            return $response->withHeader('Content-Type', 'application/json');
+                'ok' => true,
+                'connection' => $connection->toArray(),
+            ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+            return $response->withHeader('Content-Type', 'application/json')->withHeader('Cache-Control', 'no-store');
         });
 
-        // Start one deploy pipeline. This is what "Modul aktualisieren" does:
-        // there is no runtime module swap — composition is a build step.
-        $app->post('/admin/modules/deploy', function (Request $request, Response $response) use ($container): Response {
+        // Local, read-only module inventory. Releases and dependency changes
+        // happen in GitHub CI; the running API neither queries nor dispatches it.
+        $app->get('/admin/modules', function (Request $request, Response $response) use ($container): Response {
             $denied = self::denyUnlessAdmin($container, $response);
             if ($denied !== null) {
                 return $denied;
             }
-
-            $body = (array) $request->getParsedBody();
-            $key = trim((string) ($body['target'] ?? ''));
-            $config = self::moduleUpdateConfig($container);
-            $target = $config->target($key);
-            if ($target === null) {
-                $response->getBody()->write(json_encode([
-                    'error' => 'Unbekanntes oder nicht konfiguriertes Ziel.',
-                    'target' => $key,
-                ], JSON_THROW_ON_ERROR));
-                return $response->withStatus(422)->withHeader('Content-Type', 'application/json');
-            }
-
-            $result = (new WorkflowDispatcher($config->dispatchToken))
-                ->dispatch($target['repo'], $target['workflow'], $config->ref);
-
-            $response->getBody()->write(json_encode([
-                'ok' => $result['ok'],
-                'target' => $key,
-                'repo' => $target['repo'],
-                'workflow' => $target['workflow'],
-                'message' => $result['message'],
-            ], JSON_THROW_ON_ERROR));
-            // 502: the dispatch itself failed upstream — the request was fine.
-            return $response->withStatus($result['ok'] ? 202 : 502)
-                ->withHeader('Content-Type', 'application/json');
+            $response->getBody()->write(json_encode(self::backendPackageVersions(), JSON_THROW_ON_ERROR));
+            return $response->withHeader('Content-Type', 'application/json')->withHeader('Cache-Control', 'no-store');
         });
 
         // The admin frontend's API reference: the base plus every composed
@@ -878,25 +848,8 @@ final class Bootstrap
     }
 
     /**
-     * Module-page configuration, read DB-first with an env fallback. The store
-     * is resolved lazily and defensively: without a database the whole page
-     * still renders, reporting "nicht konfiguriert".
-     */
-    private static function moduleUpdateConfig(Container $container): ModuleUpdateConfig
-    {
-        $store = null;
-        try {
-            $store = $container->get(SettingsStoreContract::class);
-        } catch (\Throwable) {
-            // No DB / no container binding — env-only.
-        }
-        return ModuleUpdateConfig::resolve($store, static fn (string $k, ?string $d): string => self::env($k, $d));
-    }
-
-    /**
      * SMTP configuration, read DB-first with `MAIL_DSN` as the env fallback.
-     * Defensive for the same reason as {@see moduleUpdateConfig}: the settings
-     * page must render on a host that has no database yet.
+     * Defensive so the settings page still renders without a database.
      */
     private static function mailConfig(Container $container): MailConfig
     {
@@ -907,25 +860,6 @@ final class Bootstrap
             // No DB / no container binding — env-only.
         }
         return MailConfig::resolve($store, static fn (string $k, ?string $d): string => self::env($k, $d));
-    }
-
-    /**
-     * The unattended module updater, sharing the settings store and the same
-     * `var/` marker convention the auto-migrator uses.
-     */
-    private static function autoUpdater(Container $container, string $rootDir, ?ModuleUpdateConfig $config = null): AutoUpdater
-    {
-        $store = null;
-        try {
-            $store = $container->get(SettingsStoreContract::class);
-        } catch (\Throwable) {
-            /* no DB — the updater degrades to "nothing stored" */
-        }
-        return new AutoUpdater(
-            $config ?? self::moduleUpdateConfig($container),
-            $store,
-            $rootDir . '/var/auto-update',
-        );
     }
 
     /**
@@ -967,7 +901,7 @@ final class Bootstrap
      * The DI container of core services exposed to modules. All bindings are
      * lazy so boot stays side-effect-free (no DB connect, no SMTP handshake).
      */
-    private static function container(): Container
+    private static function container(string $rootDir): Container
     {
         $container = new Container();
 
@@ -1014,18 +948,21 @@ final class Bootstrap
         });
 
         // The public sites' page cache. Bound here, like Mailer, so no
-        // extension holds an HTTP client, a token or a URL policy of its own —
-        // `RebuildTrigger` already exists three times near byte-identically,
-        // and every fix to it has to be made three times.
+        // extension holds an HTTP client, a token or a URL policy of its own.
+        // ConnectedSiteCacheService selects the paired resource and decrypts
+        // its cache token without exposing either value to the browser.
         //
         // It never throws: a site that is down must not turn "save this
         // article" into an error. Stateless and cheap to construct, so it does
         // not need the lazy treatment the DB-touching bindings do.
-        $container->set(SiteCache::class, static fn (): SiteCache => new HttpSiteCache());
+        $container->set(ReportingSiteCache::class, static fn (): ReportingSiteCache => new HttpSiteCache());
+        // Compatibility adapter for extensions released against 1.10.x.
+        $container->set(SiteCache::class, static fn ($c): SiteCache => $c->get(ReportingSiteCache::class));
 
         // The default binding is anonymous; AuthMiddleware rebinds it per
         // request to a JwtUserContext when a valid token is presented.
         $container->set(UserContext::class, static fn (): UserContext => new AnonymousUserContext());
+        $container->set(SiteConnectionIdentity::class, static fn (): SiteConnectionIdentity => new SiteConnectionIdentity());
 
         // Base-service per-user dashboard layout store (lazy — no DB on boot).
         $container->set(DashboardLayoutRepository::class, static fn ($c): DashboardLayoutRepository =>
@@ -1058,6 +995,26 @@ final class Bootstrap
             self::siteKeyPolicy($c),
         ));
 
+        $container->set(SiteConnectionStore::class, static fn ($c): SiteConnectionStore => new SiteConnectionStore(
+            $c->get(PDO::class),
+            self::env('SETTINGS_ENCRYPTION_KEY', ''),
+        ));
+        $container->set(PairingRateLimiter::class, static fn (): PairingRateLimiter => new PairingRateLimiter(
+            $rootDir . '/var/pairing-rate-limit',
+        ));
+        $container->set(SiteConnections::class, static fn ($c): SitePairingService => new SitePairingService(
+            $c->get(SiteConnectionStore::class),
+            $c->get(SiteKeys::class),
+            self::env('SETTINGS_ENCRYPTION_KEY', ''),
+            $c->get(PairingRateLimiter::class),
+            self::env('APP_ENV', 'production') !== 'production',
+            $c->get(SettingsStoreContract::class),
+        ));
+        $container->set(ConnectedSiteCache::class, static fn ($c): ConnectedSiteCache => new ConnectedSiteCacheService(
+            $c->get(SiteConnectionStore::class),
+            $c->get(ReportingSiteCache::class),
+        ));
+
         return $container;
     }
 
@@ -1088,7 +1045,10 @@ final class Bootstrap
      */
     public static function migrationPaths(): array
     {
-        return (new ModuleRegistry(Modules::enabled()))->migrationPaths();
+        return array_merge(
+            [dirname(__DIR__) . '/migrations'],
+            (new ModuleRegistry(Modules::enabled()))->migrationPaths(),
+        );
     }
 
     /**
@@ -1139,7 +1099,7 @@ final class Bootstrap
             return;
         }
         (new MigrationRunner(
-            $registry->migrationPaths(),
+            array_merge([dirname(__DIR__) . '/migrations'], $registry->migrationPaths()),
             [
                 'host' => self::env('DB_HOST', '127.0.0.1'),
                 'port' => self::env('DB_PORT', '3306'),
@@ -1261,6 +1221,49 @@ final class Bootstrap
         } catch (\Throwable) {
             return null;
         }
+    }
+
+    private static function sitePairingService(Container $container): ?SitePairingService
+    {
+        if (self::env('DB_NAME', '') === '') {
+            return null;
+        }
+        try {
+            $service = $container->get(SiteConnections::class);
+            return $service instanceof SitePairingService ? $service : null;
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    private static function requestOrigin(Request $request): string
+    {
+        $uri = $request->getUri();
+        $scheme = strtolower($uri->getScheme());
+        $host = strtolower($uri->getHost());
+        if ($host === '') {
+            $host = strtolower(trim(explode(':', $request->getHeaderLine('Host'), 2)[0] ?? ''));
+        }
+        if ($scheme === '') {
+            $scheme = 'https';
+        }
+        $port = $uri->getPort();
+        return SitePairingService::origin(
+            $scheme . '://' . $host . ($port !== null ? ':' . $port : ''),
+            true,
+            self::env('APP_ENV', 'production') !== 'production',
+        );
+    }
+
+    private static function pairingError(Response $response, SitePairingException $error): Response
+    {
+        $response->getBody()->write(json_encode([
+            'error' => $error->errorCode,
+            'message' => $error->getMessage(),
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+        return $response->withStatus($error->httpStatus)
+            ->withHeader('Content-Type', 'application/json')
+            ->withHeader('Cache-Control', 'no-store');
     }
 
     /**

@@ -26,7 +26,7 @@ use Tds\CoreFrontendApi\Bootstrap;
  *     Parameter $apiKey of __construct() has no value defined or guessable
  *
  * Reading the CMS worked, saving a post or a content block answered 500, and
- * the settings-store factories (DeepL key, rebuild PAT) had never run once.
+ * the settings-store factories (for example the DeepL key) had never run once.
  * Nothing else looks: these extension repos have no PHP suite in CI, the
  * composition test only checks that routes are *mounted*, and a container entry
  * is built lazily — so a broken binding costs nothing until someone saves.

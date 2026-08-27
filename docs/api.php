@@ -451,83 +451,51 @@ return [
     ],
     [
         'method' => 'POST',
-        'pattern' => '/admin/modules/check',
-        'tag' => 'Module',
-        'summary' => 'Verfügbare Modulversionen bei der Registry abfragen',
-        'description' => 'POST statt GET, weil die Paketliste die **Eingabe** ist: welche Module '
-            . 'komponiert sind, ist eine Eigenschaft des Frontend-Builds, die diese API '
-            . 'nicht kennt. Liefert außerdem den Zustand der unbeaufsichtigten '
-            . 'Aktualisierung und die Backend-Paketversionen. Der Registry-Token '
-            . 'verlässt den Server dabei nie.',
-        'auth' => 'admin',
-        'params' => [
-            [
-                'in' => 'body',
-                'name' => 'inventory',
-                'type' => 'array',
-                'description' => 'Die gebackene Inventarliste des Produkts (`{pkg, range, installed}`). '
-                    . 'Wird gemerkt, weil die gepinnten Bereiche nur in der package.json '
-                    . 'des Produkts stehen und der Auto-Updater sie braucht.',
-            ],
-            [
-                'in' => 'body',
-                'name' => 'packages',
-                'type' => 'string[]',
-                'description' => 'Alternativ nur die Paketnamen. Nicht freigegebene Namen werden verworfen.',
-            ],
-        ],
+        'pattern' => '/sites/pairings/exchange',
+        'tag' => 'Site-Verbindungen',
+        'summary' => 'Einmalige Freigabe serverseitig gegen Site-Zugang tauschen',
+        'description' => 'Wird ausschließlich vom Server der öffentlichen Site aufgerufen. '
+            . 'Die zehn Minuten gültige Freigabe ist an Profil und HTTPS-Origin gebunden '
+            . 'und kann nur einmal ausgetauscht werden. Die Antwort mit Site-Key und '
+            . 'Cache-Token darf nie an einen Browser weitergereicht werden.',
+        'auth' => 'pairing-token',
         'responses' => [
-            [
-                'status' => 200,
-                'description' => '`{auto, versions, registry: {configured, error}, targets, backend, checked_at}`. '
-                    . '`registry.error` wird wörtlich durchgereicht — „Token abgelehnt" und '
-                    . '„Paket unbekannt" brauchen völlig verschiedene Gegenmaßnahmen.',
-            ],
-            ['status' => 401, 'description' => 'Keine Sitzung.'],
-            ['status' => 403, 'description' => 'Angemeldet, aber kein Admin.'],
+            ['status' => 200, 'description' => 'Private Verbindungsdaten plus Finalisierungs-Token.'],
+            ['status' => 401, 'description' => 'Freigabe unbekannt.'],
+            ['status' => 403, 'description' => 'Profil oder Origin passen nicht.'],
+            ['status' => 409, 'description' => 'Freigabe bereits ausgetauscht oder verwendet.'],
+            ['status' => 410, 'description' => 'Freigabe abgelaufen oder ersetzt.'],
+            ['status' => 429, 'description' => 'Zu viele Versuche.'],
         ],
     ],
     [
         'method' => 'POST',
-        'pattern' => '/admin/modules/auto-update',
-        'tag' => 'Module',
-        'summary' => 'Unbeaufsichtigte Aktualisierung sofort ausführen',
-        'description' => 'Das „Jetzt prüfen und aktualisieren" der Modulseite. Läuft auch, '
-            . 'wenn die Automatik ausgeschaltet ist, damit man sie vor dem Aktivieren '
-            . 'testen kann. Berücksichtigt nur Versionen **innerhalb** des gepinnten '
-            . 'Bereichs und stößt ausschließlich den Frontend-Build an.',
-        'auth' => 'admin',
+        'pattern' => '/sites/pairings/finalize',
+        'tag' => 'Site-Verbindungen',
+        'summary' => 'Geprüfte, dauerhaft geschriebene Site-Verbindung aktivieren',
+        'description' => 'Aktiviert den neuen Schlüssel erst, nachdem die Site ihre private '
+            . 'Datei atomar geschrieben und wieder gelesen hat. Ein wiederholter Aufruf '
+            . 'ist idempotent; beim Reconnect bleibt die alte Verbindung bis dahin aktiv.',
+        'auth' => 'finalize-token',
         'responses' => [
-            ['status' => 200, 'description' => '`{report, auto}`'],
-            ['status' => 401, 'description' => 'Keine Sitzung.'],
-            ['status' => 403, 'description' => 'Angemeldet, aber kein Admin.'],
+            ['status' => 200, 'description' => 'Die geheimnisfreie aktive Verbindung.'],
+            ['status' => 401, 'description' => 'Finalisierungs-Token ungültig.'],
+            ['status' => 409, 'description' => 'Freigabe wurde noch nicht ausgetauscht.'],
+            ['status' => 410, 'description' => 'Freigabe abgelaufen oder ersetzt.'],
         ],
     ],
     [
-        'method' => 'POST',
-        'pattern' => '/admin/modules/deploy',
+        'method' => 'GET',
+        'pattern' => '/admin/modules',
         'tag' => 'Module',
-        'summary' => 'Deploy-Pipeline eines Ziels auslösen',
-        'description' => 'Was „Modul aktualisieren" tatsächlich tut: es gibt keinen '
-            . 'Laufzeit-Modultausch, Komposition ist ein Build-Schritt. Da CI mit '
-            . '`npm install --no-package-lock` installiert, löst **ein** Rebuild ALLE '
-            . 'Caret-Bereiche neu auf — nicht nur den eines Moduls.',
+        'summary' => 'Lokal installierte Backend-Paketversionen anzeigen',
+        'description' => 'Reine lokale Bestandsaufnahme. Die laufende API fragt keine '
+            . 'Paketregistry ab und löst weder Builds noch Deployments aus.',
         'auth' => 'admin',
-        'params' => [
-            [
-                'in' => 'body',
-                'name' => 'target',
-                'type' => 'string',
-                'required' => true,
-                'description' => 'Schlüssel eines konfigurierten Ziels (Repo + Workflow).',
-            ],
-        ],
         'responses' => [
-            ['status' => 202, 'description' => 'Pipeline angestoßen: `{ok, target, repo, workflow, message}`'],
+            ['status' => 200, 'description' => '`{modules, packages}` mit lokal installierten Versionen.'],
             ['status' => 401, 'description' => 'Keine Sitzung.'],
             ['status' => 403, 'description' => 'Angemeldet, aber kein Admin.'],
-            ['status' => 422, 'description' => 'Unbekanntes oder nicht konfiguriertes Ziel.'],
-            ['status' => 502, 'description' => 'Der Dispatch selbst ist upstream fehlgeschlagen — die Anfrage war in Ordnung.'],
         ],
     ],
     [
