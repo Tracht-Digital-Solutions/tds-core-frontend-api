@@ -5,6 +5,10 @@ Betreiberhandbuch für die drei öffentlichen Properties — `tracht-digital.de`
 Fragen: **wie eine Site an diese API kommt**, **wo welcher Inhalt bearbeitet
 wird**, und **wie eine Änderung live geht**.
 
+Die beiden Panels (Verwaltung, Kundenportal) binden sich nach einem anderen
+Modell an dieselbe API. Der Vergleich steht in [§1.5](#15-die-beiden-panels-binden-sich-anders--und-nicht-hier);
+die Anleitung im jeweiligen Produkt-Repo.
+
 Für Entwicklungsdetails: `AGENTS.md` im jeweiligen Repo. Für die Einrichtung des
 Hosts: `tds-gateway-api/DEPLOY-PLESK.md`.
 
@@ -88,6 +92,54 @@ curl -s -H 'x-tds-cache-token: …' https://blog.tracht-digital.de/tds/cache/sta
 `status` nennt Verzeichnis, Anzahl der Einträge, ältesten und neuesten Stand.
 **Antwortet es `401`, stimmt das Token nicht; `503` heißt, auf dem Host ist gar
 keins gesetzt.** Beides sind Konfigurationsfehler, keine Ausfälle.
+
+### 1.5 Die beiden Panels binden sich anders — und nicht hier
+
+Verwaltung (`management.tracht-digital.de`) und Kundenportal
+(`app.tracht-digital.de`) sprechen mit derselben API, aber **die vier Schritte
+oben gelten für sie nicht**. Der Unterschied ist keine Inkonsistenz, sondern
+folgt aus dem, was die beiden Sorten sind.
+
+| | Öffentliche Sites | Panels |
+|---|---|---|
+| Wann die Anbindung entschieden wird | zur **Laufzeit** | zur **Build-Zeit** |
+| Wie | `/install` koppelt, Zugangsdaten liegen außerhalb des Checkouts | `PUBLIC_API_BASE` / `PUBLIC_AUTH_API_URL` / `PUBLIC_LOGIN_URL` beim Bauen |
+| Umhängen kostet | einen Assistentenlauf | einen Neubau **und** ein Deployment |
+| Wer sich ausweist | die **Site** (Site-Key) | die **Person** (Sitzungs-Cookie) |
+| Seiten-Cache | ja, dateibasiert | nein, jede Seite ist besucherindividuell |
+
+Ein Panel liest `tds-runtime.json` bewusst **nie**: die Shell des Hosts
+schreibt `<meta name="tds-api-base">`, und `runtimeConfig()` in
+`tds-shared/api` bricht ab, sobald dieses Tag vorhanden ist. Ohne diese Bremse
+würde jede Navigation im Panel einen garantierten 404 für eine Datei auslösen,
+die nur die öffentlichen Sites besitzen.
+
+Anleitung im jeweiligen Repo: `tds-admin-frontend/INSTALL.md` §5.2 bzw.
+`tds-customer-frontend/README.md` → *Bind it to an API*.
+
+#### Was ein Panel von dieser API zusätzlich braucht: seine Herkunft in CORS
+
+Ein Panel ruft über Herkunftsgrenzen hinweg und **mit Anmeldedaten**
+(`credentials: "include"`). Dafür muss die Antwort die Herkunft des Panels
+**exakt** nennen — der `*`-Platzhalter ist zusammen mit Anmeldedaten verboten.
+
+Drei Ebenen liefern diese Liste, und sie werden **vereinigt, nicht
+übersteuert**:
+
+1. eine eingebaute Grundmenge (die eigenen Produktionsdomains),
+2. `CORS_ALLOWED_ORIGINS` aus der `.env` des Hosts,
+3. was ein Admin unter **Einstellungen → CORS** einträgt.
+
+Die Vereinigung ist Absicht: könnte Ebene 3 die anderen ersetzen, würde ein
+Tippfehler im Panel das Panel aussperren, das ihn korrigieren müsste.
+
+> **Der Fehler sieht nach keinem Fehler aus.** Fehlt die Herkunft, verwirft der
+> **Browser** die Antwort, bevor Anwendungscode sie sieht. Auf dieser Seite
+> passiert nichts Auffälliges: kein Fehlerstatus, kein Logeintrag. Im Panel
+> erscheint genau die Darstellung, die auch „keine Daten vorhanden" bedeutet.
+> Wer eine leere Liste sieht, prüft deshalb zuerst das Netzwerk-Panel des
+> Browsers auf `Access-Control-Allow-Origin` — nicht die Datenbank.
+
 
 ---
 
