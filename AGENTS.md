@@ -118,8 +118,23 @@ origins were enumerated only in a frontend bundle the API could never see.
   the custom-site list, DB-first with `SITE_KEY_ENFORCEMENT` as fallback. Note
   this is **not** the CORS inversion: nothing here can lock an admin out, since
   the panel's own routes are never site-key protected.
-- **`Middleware\SiteKeyMiddleware`** gates only the prefixes modules declare
-  through the contract's `SiteKeyProtected` (`ModuleRegistry::siteKeyRoutes()`).
+- **`Service\SitemapExclusions`** (namespace `sites`, key `sitemap_exclusions`)
+  holds the per-site list of paths a public site drops from its sitemap and
+  serves as `noindex`. Stored as JSON in the settings store rather than a table,
+  for the same reason `SiteKeyPolicy` keeps its custom sites there — and because
+  a migration is not free here: `MigrationRunner` preflights every module's
+  files into one `phinxlog` and aborts all of them on a collision. Read
+  fail-soft in both directions: no store means "nothing excluded", never
+  "everything", so a database outage can date a sitemap but not empty it.
+  `GET /content/sitemap-exclusions` is the public read; `GET|PUT /admin/sites`
+  the admin surface. A `PUT` replaces the whole map — a partial merge would
+  leave no way to remove a site's last pattern.
+- **`Middleware\SiteKeyMiddleware`** gates the prefixes modules declare through
+  the contract's `SiteKeyProtected` (`ModuleRegistry::siteKeyRoutes()`), plus
+  the core's own `/content/sitemap-exclusions`, appended where the middleware is
+  added. The registry collects *module* declarations only, and those are exact
+  prefixes (`/content/blog`, …), so a core-owned route under `/content` matches
+  none of them and would otherwise be the one ungated hole in the surface.
 
 Five things about this are load-bearing:
 
