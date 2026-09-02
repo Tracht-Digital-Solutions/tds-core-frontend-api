@@ -389,14 +389,39 @@ return [
         'params' => [
             ['in' => 'body', 'name' => 'enforcement', 'type' => 'off|warn|enforce', 'description' => 'Neuer Modus.'],
             ['in' => 'body', 'name' => 'sites', 'type' => 'array', 'description' => 'Eigene Sites: `{id, label, origins}`.'],
+            ['in' => 'body', 'name' => 'sitemap_exclusions', 'type' => 'object', 'description' => 'Pfade je Site, die aus der Sitemap fallen: `{"blog": ["/tag/*"]}`. '
+                . 'Ersetzt die Liste vollständig — ein Teil-Merge ließe den letzten Pfad einer Site nicht mehr entfernen. '
+                . 'Muster beginnen mit `/`; ein `*` ist nur als letztes Zeichen erlaubt (Präfix).'],
             ['in' => 'body', 'name' => 'reset_unkeyed', 'type' => 'bool', 'description' => 'Setzt den `warn`-Zähler zurück.'],
         ],
         'responses' => [
-            ['status' => 200, 'description' => '`{ok: true, enforcement, sites, rejected}`'],
+            ['status' => 200, 'description' => '`{ok: true, enforcement, sites, rejected}`; bei geänderten '
+                . 'Ausschlüssen zusätzlich `sitemap_exclusions` und `cache_status` je betroffener Site.'],
             ['status' => 401, 'description' => 'Keine Sitzung.'],
             ['status' => 403, 'description' => 'Angemeldet, aber kein Admin.'],
-            ['status' => 422, 'description' => 'Unbekannter Modus oder `sites` ist keine Liste.'],
+            ['status' => 422, 'description' => 'Unbekannter Modus, `sites` ist keine Liste oder `sitemap_exclusions` ist kein Objekt.'],
             ['status' => 503, 'description' => 'Keine Datenbank konfiguriert.'],
+        ],
+    ],
+    [
+        'method' => 'GET',
+        'pattern' => '/content/sitemap-exclusions',
+        'tag' => 'Site-Verbindungen',
+        'summary' => 'Ausgeschlossene Pfade einer Site lesen (öffentlich, Site-Key)',
+        'description' => 'Die Liste, die eine öffentliche Site beim Rendern liest: Pfade, die sie '
+            . 'aus ihrer Sitemap nimmt und stattdessen mit `noindex` ausliefert. Die Site kommt '
+            . 'aus `site`, ersatzweise aus dem verifizierten Site-Key — der Query-Parameter ist '
+            . 'nötig, weil bei `enforcement = off` gar kein Key verifiziert wird. Antwortet '
+            . 'IMMER mit 200: schlägt etwas fehl, ist die Liste leer. Die Richtung ist Absicht — '
+            . '„nichts ausgeschlossen" lässt eine Sitemap vollständig, ein Fehler in die andere '
+            . 'Richtung würde sie unbemerkt leeren.',
+        'auth' => 'token',
+        'params' => [
+            ['in' => 'query', 'name' => 'site', 'type' => 'string', 'description' => 'Site-Kennung, z. B. `tools`. Ohne Angabe die des Keys.'],
+        ],
+        'responses' => [
+            ['status' => 200, 'description' => '`{site, paths}` — `paths` ist leer, wenn nichts konfiguriert oder lesbar ist.'],
+            ['status' => 401, 'description' => 'Site-Key fehlt oder ist ungültig (nur bei `enforcement = enforce`).'],
         ],
     ],
     [

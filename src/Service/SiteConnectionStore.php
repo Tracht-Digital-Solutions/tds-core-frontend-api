@@ -56,6 +56,40 @@ final class SiteConnectionStore
         return $token === null || $token === '' ? null : ['origin' => (string) $row['origin'], 'token' => $token];
     }
 
+    /**
+     * The connected resources belonging to one site profile.
+     *
+     * `profile` carries the site id the install wizard paired under
+     * (`blog`, `landingpage`, `tools`), while `resource_type`/`resource_id`
+     * name the row a module owns — `('blog', <blog_key>)`,
+     * `('website', <site_key>)`, `('tools', 'tools')`. This lookup is what lets
+     * the core address a site's cache from a site id alone, without reading a
+     * module's own tables for an id it has no business knowing.
+     *
+     * Connected rows only: a pending pairing has no cache token to send to.
+     *
+     * @return list<array{resource_type: string, resource_id: string}>
+     */
+    public function connectionsByProfile(string $profile): array
+    {
+        $this->ensureSchema();
+        $stmt = $this->pdo->prepare(
+            'SELECT resource_type, resource_id FROM app_site_connection
+              WHERE profile = :profile AND status = :status
+              ORDER BY resource_type, resource_id'
+        );
+        $stmt->execute([':profile' => $profile, ':status' => SiteConnection::CONNECTED]);
+
+        $out = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $out[] = [
+                'resource_type' => (string) $row['resource_type'],
+                'resource_id' => (string) $row['resource_id'],
+            ];
+        }
+        return $out;
+    }
+
     public function delete(string $resourceType, string $resourceId, SiteKeyStore $keys): bool
     {
         return $this->transaction(function () use ($resourceType, $resourceId, $keys): bool {

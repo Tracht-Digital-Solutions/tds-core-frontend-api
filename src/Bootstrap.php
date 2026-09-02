@@ -35,9 +35,12 @@ use Tds\CoreFrontendApi\Service\SiteKeyPolicy;
 use Tds\CoreFrontendApi\Service\SiteKeyStore;
 use Tds\CoreFrontendApi\Service\SitePairingException;
 use Tds\CoreFrontendApi\Service\SitePairingService;
+use Tds\CoreFrontendApi\Service\SitemapExclusions;
 use Tds\CoreFrontendApi\Service\SmtpMailer;
 use Tds\CoreFrontendApi\Support\AnonymousUserContext;
 use Tds\CoreFrontendApi\Support\MigrationRunner;
+use Tds\Frontend\Contract\CacheEvent;
+use Tds\Frontend\Contract\CacheResult;
 use Tds\Frontend\Contract\Email;
 use Tds\Frontend\Contract\Mailer;
 use Tds\Frontend\Contract\ModuleRegistry;
@@ -91,7 +94,16 @@ final class Bootstrap
         // and it must sit inside CorsMiddleware so a 401 still carries the CORS
         // headers — otherwise a rejected key reports itself to the browser as a
         // CORS failure. See SiteKeyMiddleware and PreflightTest.
-        $app->add(new SiteKeyMiddleware($container, $registry->siteKeyRoutes()));
+        //
+        // The core appends its own prefix. `ModuleRegistry::siteKeyRoutes()`
+        // collects MODULE declarations only, and the ones it collects are exact
+        // (`/content/blog`, `/content/landing`, …) — so a core-owned public read
+        // under `/content` is caught by none of them and would otherwise be the
+        // one ungated hole in an otherwise gated surface.
+        $app->add(new SiteKeyMiddleware($container, [
+            ...$registry->siteKeyRoutes(),
+            '/content/sitemap-exclusions',
+        ]));
         // Auth populates the request principal (UserContext) each request; it
         // does NOT gate — routes/modules enforce via the resolved context.
         $app->add(new AuthMiddleware($container, self::tokenVerifier($rootDir)));
@@ -521,6 +533,7 @@ final class Bootstrap
                 ];
             }
 
+            $exclusions = self::sitemapExclusions($container);
             $payload = [
                 'sites' => $sites,
                 'enforcement' => $policy->enforcement,
@@ -528,6 +541,14 @@ final class Bootstrap
                 'protected_routes' => $registry->siteKeyRoutes(),
                 'unkeyed' => self::unkeyedState($container),
                 'store_available' => $store !== null,
+                // Which paths each site keeps out of its sitemap. An object
+                // keyed by site id, absent keys meaning "nothing excluded" —
+                // the same shape the PUT accepts back.
+                'sitemap_exclusions' => (object) $exclusions->all(),
+                'sitemap_exclusion_limits' => [
+                    'max_per_site' => SitemapExclusions::MAX_PER_SITE,
+                    'max_length' => SitemapExclusions::MAX_LENGTH,
+                ],
             ];
             $response->getBody()->write(json_encode($payload, JSON_THROW_ON_ERROR));
             return $response->withHeader('Content-Type', 'application/json')->withHeader('Cache-Control', 'no-store');
@@ -649,6 +670,35 @@ final class Bootstrap
                 $writes[SiteKeyPolicy::KEY_CUSTOM_SITES] = SiteKeyPolicy::encodeSites($accepted);
             }
 
+            // The sitemap exclusion list, as a whole map — a PUT replaces it.
+            // Partial merge would leave no way to REMOVE the last pattern of a
+            // site, which is the edit an operator makes when a page should go
+            // back into the index.
+            $touchedSites = [];
+            if (array_key_exists('sitemap_exclusions', $body)) {
+                if (!is_array($body['sitemap_exclusions'])) {
+                    $response->getBody()->write(json_encode([
+                        'error' => 'sitemap_exclusions must be an object keyed by site id',
+                    ], JSON_THROW_ON_ERROR));
+                    return $response->withStatus(422)->withHeader('Content-Type', 'application/json');
+                }
+                $known = array_column(self::siteKeyPolicy($container)->sites(), 'id');
+                [$exclusions, $exclusionRejects] = SitemapExclusions::normalize(
+                    (array) $body['sitemap_exclusions'],
+                    $known,
+                );
+                $rejected = [...$rejected, ...$exclusionRejects];
+                $writes[SitemapExclusions::KEY] = SitemapExclusions::encode($exclusions);
+
+                // Every site named before OR after the change: a pattern that
+                // was just REMOVED dates the same pages as one that was added,
+                // and only the previous list still knows about it.
+                $touchedSites = array_values(array_unique([
+                    ...array_keys(self::sitemapExclusions($container)->all()),
+                    ...array_keys($exclusions),
+                ]));
+            }
+
             // Explicit reset of the warn counter — otherwise the number only
             // ever grows and stops meaning "still keyless" the moment one site
             // is fixed.
@@ -669,14 +719,65 @@ final class Bootstrap
             }
 
             $policy = self::siteKeyPolicy($container);
-            $response->getBody()->write(json_encode([
+            $payload = [
                 'ok' => true,
                 'enforcement' => $policy->enforcement,
                 'sites' => $policy->sites(),
                 // Reported, never swallowed: an entry that was silently dropped
                 // looks saved, and the key issued for it matches nothing.
                 'rejected' => $rejected,
-            ], JSON_THROW_ON_ERROR));
+            ];
+
+            if ($touchedSites !== []) {
+                $payload['sitemap_exclusions'] = (object) self::sitemapExclusions($container)->all();
+                // A changed list moves two things on the site: the sitemap, and
+                // the `noindex` meta of every page that entered or left the
+                // list. Both are rendered pages, so both need the cache told.
+                $payload['cache_status'] = self::refreshSitemaps($container, $touchedSites);
+            }
+
+            $response->getBody()->write(json_encode($payload, JSON_THROW_ON_ERROR));
+            return $response->withHeader('Content-Type', 'application/json');
+        });
+
+        // The exclusion list one public site reads while rendering.
+        //
+        // Site-key protected (the prefix is appended to SiteKeyMiddleware where
+        // the middleware is added — the module registry only collects module
+        // declarations). The site is taken from the query string first and from
+        // the verified key second: the identity is only populated once a key was
+        // actually accepted, and with `enforcement = off` there is none, so a
+        // key-derived-only route would answer nothing on exactly the
+        // installations that have not finished pairing yet.
+        //
+        // FAIL-SOFT, like every other public read here: any failure answers 200
+        // with an empty list. The direction matters — "nothing excluded" leaves
+        // a sitemap complete, while an error that excluded everything would
+        // empty it, and every consumer of this route is fail-soft too, so the
+        // mistake would be invisible on both ends.
+        $app->get('/content/sitemap-exclusions', function (Request $request, Response $response) use ($container): Response {
+            $site = trim((string) ($request->getQueryParams()['site'] ?? ''));
+            if ($site === '') {
+                try {
+                    $site = trim((string) $container->get(SiteConnectionIdentity::class)->site);
+                } catch (\Throwable) {
+                    $site = '';
+                }
+            }
+
+            $paths = [];
+            if ($site !== '') {
+                try {
+                    $paths = self::sitemapExclusions($container)->forSite($site);
+                } catch (\Throwable) {
+                    $paths = [];
+                }
+            }
+
+            $response->getBody()->write(json_encode([
+                'site' => $site,
+                'paths' => $paths,
+            ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
             return $response->withHeader('Content-Type', 'application/json');
         });
 
@@ -1201,6 +1302,65 @@ final class Bootstrap
             }
         }
         return SiteKeyPolicy::resolve($store, static fn (string $k, ?string $d): string => self::env($k, $d));
+    }
+
+    /**
+     * The per-site sitemap exclusion list, guarded exactly like
+     * {@see siteKeyPolicy()} — no `DB_NAME` means no stored layer, and the
+     * answer is an empty list rather than a failed PDO connection.
+     */
+    private static function sitemapExclusions(Container $container): SitemapExclusions
+    {
+        $store = null;
+        if (self::env('DB_NAME', '') !== '') {
+            try {
+                $store = $container->get(SettingsStoreContract::class);
+            } catch (\Throwable) {
+                // No DB / no binding — nothing excluded.
+            }
+        }
+        return SitemapExclusions::resolve($store);
+    }
+
+    /**
+     * Tell each named site to re-render the pages its exclusion list moved.
+     *
+     * The site ids double as the connection `profile` (`blog`, `landingpage`,
+     * `tools`), which is what lets the core find the cache target without
+     * reaching into a module's own tables for its resource id.
+     *
+     * Reported, never fatal: persistence already succeeded by the time this
+     * runs, and an unreachable site must not turn a saved setting into an
+     * error — the same split every module's write path makes.
+     *
+     * @param  list<string> $sites
+     * @return array<string, string>
+     */
+    private static function refreshSitemaps(Container $container, array $sites): array
+    {
+        $out = [];
+        foreach ($sites as $site) {
+            try {
+                $connections = $container->get(SiteConnectionStore::class);
+                $cache = $container->get(ConnectedSiteCache::class);
+                $targets = $connections->connectionsByProfile($site);
+                if ($targets === []) {
+                    $out[$site] = CacheResult::NOT_CONFIGURED;
+                    continue;
+                }
+                foreach ($targets as $target) {
+                    $result = $cache->refresh(
+                        $target['resource_type'],
+                        $target['resource_id'],
+                        new CacheEvent('sitemap'),
+                    );
+                    $out[$site] = $result->status;
+                }
+            } catch (\Throwable) {
+                $out[$site] = CacheResult::FAILED;
+            }
+        }
+        return $out;
     }
 
     /**

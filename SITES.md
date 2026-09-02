@@ -170,6 +170,51 @@ Das hat zwei Konsequenzen, die im Alltag zählen:
 - **Ein Feld zu leeren nimmt die Bearbeitung zurück.** Es gibt keinen zweiten
   Mechanismus dafür, und es braucht keinen.
 
+### 2.1 Seiten aus der Sitemap nehmen
+
+Die drei Sites bauen ihre Sitemaps selbst — die URL-Liste kommt aus dem
+Artikelbestand (Blog), dem Tool-Katalog (Tools) oder dem festgelegten
+Routenverzeichnis (Landingpage). Was hier gepflegt wird, ist die **Subtraktion**:
+eine Liste von Pfaden je Site.
+
+| | |
+|---|---|
+| Lesen | `GET /admin/sites` → Feld `sitemap_exclusions` |
+| Schreiben | `PUT /admin/sites` mit `{"sitemap_exclusions": {"blog": ["/tag/*"]}}` |
+| Wirkung | Der Pfad fällt aus `/sitemap-0.xml` **und** die Seite wird mit `noindex,nofollow` ausgeliefert |
+
+Gepflegt wird die Liste über die API — sie hängt an denselben Admin-Routen wie
+der Erzwingungsmodus und die eigenen Sites, also an *Site-Verbindungen*. Ein
+`PUT` ersetzt die Liste **vollständig**; ein Teil-Merge ließe den letzten Pfad
+einer Site nicht mehr entfernen, und genau das ist die Bearbeitung, die eine
+Seite in den Index zurückholt.
+
+Ein Eintrag ist ein Pfad ab `/`, ohne Domain und ohne `?`. Ein `*` am Ende macht
+daraus ein Präfix:
+
+| Muster | Trifft | Trifft nicht |
+|---|---|---|
+| `/preise` | `/preise`, `/preise/` | `/preise-2026` |
+| `/tag/*` | `/tag/steuern`, `/tag/a/b` | `/tag` |
+| `/tools*` | `/tools`, `/tools/qr-code` | — |
+
+**Ein Ausschluss nimmt immer beide Sprachfassungen.** `/leistungen/beratung`
+entfernt auch `/en/services/consulting`. Das ist keine Bequemlichkeit, sondern
+Pflicht: die Sitemaps geben zu jeder URL wechselseitige `hreflang`-Verweise aus,
+und ein Verweis, der ins Leere zeigt, entwertet die **ganze** Gruppe — die
+deutsche Seite eingeschlossen.
+
+Warum eine Pfadliste und kein Häkchen am Inhalt: das meiste, was man verbergen
+will, hat keinen Datensatz. `/preise` ist eine ausgelieferte Seite, `/tag/…` und
+`/page/3` entstehen aus den Feldern *anderer* Beiträge, und die Leistungsseiten
+der Landingpage sind absichtlich im Code verankert. Ein `noindex`-Feld am
+Artikel und am Tool würde genau zwei Fälle abdecken und alle übrigen verfehlen.
+
+Speichern stößt den Cache-Neubau der betroffenen Site selbst an — die Antwort
+enthält ein `cache_status` je Site. Ist die Liste unlesbar oder die Datenbank
+weg, gilt **nichts ist ausgeschlossen**: eine Sitemap kann dadurch veralten, nie
+leerlaufen. Dieselbe Richtung wie bei den Texten oben, aus demselben Grund.
+
 ---
 
 ## 3. Wie eine Änderung live geht
