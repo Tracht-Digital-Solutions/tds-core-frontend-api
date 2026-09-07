@@ -1,9 +1,24 @@
 # Die öffentlichen Sites anbinden und pflegen
 
-Betreiberhandbuch für die drei öffentlichen Properties — `tracht-digital.de`,
-`blog.tracht-digital.de` und `tools.tracht-digital.de`. Es beantwortet drei
-Fragen: **wie eine Site an diese API kommt**, **wo welcher Inhalt bearbeitet
-wird**, und **wie eine Änderung live geht**.
+Betreiberhandbuch für die vier öffentlichen Properties — `tracht-digital.de`,
+`blog.tracht-digital.de`, `tools.tracht-digital.de` und
+`shop.tracht-digital.de`. Es beantwortet drei Fragen: **wie eine Site an diese
+API kommt**, **wo welcher Inhalt bearbeitet wird**, und **wie eine Änderung live
+geht**.
+
+> **TDShop** ist seit dem 07.09.2026 als vierte Site registriert. Der Katalog
+> wird unter *TDShop* im Verwaltungspanel gepflegt, die Werbeplätze unter
+> *TDShop → Platzierungen*. Zwei Besonderheiten, die kein anderer Inhalt hat:
+> ein Affiliate-Preis wird **nach 24 Stunden nicht mehr angezeigt** (Vorgabe der
+> Amazon-PA-API-Lizenz, serverseitig durchgesetzt), und ein Produkt kommt nur
+> mit eigenem Einschätzungstext (`editorial_status = published`) in die Sitemap.
+> Der optionale Hostwert `SHOP_PUBLIC_URL` überschreibt den Ursprung, aus dem
+> Produkt- und Klick-Links gebaut werden.
+>
+> **Was noch fehlt:** ein Produktspeichern stößt bisher **keinen Cache-Neubau**
+> der Shop-Site an — das kommt zusammen mit der Site selbst. Bis dahin gilt für
+> den Shop wieder die alte Regel: eine Änderung wird erst nach einem Neubau
+> sichtbar. Ebenso offen: der Amazon-Angebotsabgleich und der Checkout.
 
 Die beiden Panels (Verwaltung, Kundenportal) binden sich nach einem anderen
 Modell an dieselbe API. Der Vergleich steht in [§1.5](#15-die-beiden-panels-binden-sich-anders--und-nicht-hier);
@@ -16,7 +31,7 @@ Hosts: `tds-gateway-api/DEPLOY-PLESK.md`.
 
 ## Das Wichtigste in drei Sätzen
 
-Die drei Sites rendern seit dem 24.08.2026 **auf Anfrage** (Astro SSR unter
+Die öffentlichen Sites rendern seit dem 24.08.2026 **auf Anfrage** (Astro SSR unter
 Node) und legen jede gerenderte Seite als gewöhnliche Datei ab, die der
 Webserver direkt ausliefert. Ein Treffer ist damit **genauso schnell wie der
 frühere statische Build** — es ist dieselbe Datei.
@@ -35,7 +50,7 @@ Schritt 3 kann Schritt 2 nicht ersetzen, und Schritt 4 prüft beide.
 ### 1.1 Site-Key ausstellen
 
 **Einstellungen → Site-Verbindungen → Schlüssel ausstellen**, Site auswählen
-(`landingpage`, `blog`, `tools`).
+(`landingpage`, `blog`, `tools`, `shop`).
 
 Der Schlüssel wird **einmal** angezeigt und nur als SHA-256-Hash gespeichert —
 verloren heißt neu ausstellen, nicht nachschlagen. Er identifiziert die Site
@@ -53,6 +68,7 @@ die Site.
 | Landingpage | Website-CMS → Site öffnen → **Seiten-Cache** → Adresse; Token unter Einstellungen → *Website-CMS* |
 | Blog | Blog-CMS → Blog öffnen → **Seiten-Cache** → Adresse; Token unter Einstellungen → *Blog-CMS* |
 | Tools | Einstellungen → *Tools / AdSense* → **Seiten-Cache: Basis-URL** + **Token** |
+| TDShop | *noch nicht* — der Katalog löst bisher keinen Cache-Neubau aus (siehe unten) |
 
 Die **Adresse** ist die Herkunft der öffentlichen Site
 (`https://blog.tracht-digital.de`), ohne Pfad. Das **Token** ist frei gewählt und

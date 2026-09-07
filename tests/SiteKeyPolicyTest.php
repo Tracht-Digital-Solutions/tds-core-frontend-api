@@ -110,7 +110,7 @@ final class SiteKeyPolicyTest extends TestCase
     public function testKnownSitesAreAlwaysPresent(): void
     {
         $ids = array_column(SiteKeyPolicy::resolve(null, self::env([]))->sites(), 'id');
-        self::assertSame(['landingpage', 'blog', 'tools', 'auth'], $ids);
+        self::assertSame(['landingpage', 'blog', 'tools', 'shop', 'auth'], $ids);
     }
 
     public function testCustomSitesFollowTheKnownOnes(): void
@@ -120,9 +120,9 @@ final class SiteKeyPolicyTest extends TestCase
         ])]);
         $sites = SiteKeyPolicy::resolve($store, self::env([]))->sites();
 
-        self::assertCount(5, $sites);
-        self::assertSame('kunde-a', $sites[4]['id']);
-        self::assertFalse($sites[4]['known']);
+        self::assertCount(6, $sites);
+        self::assertSame('kunde-a', $sites[5]['id']);
+        self::assertFalse($sites[5]['known']);
         self::assertTrue($sites[0]['known']);
     }
 
@@ -199,7 +199,7 @@ final class SiteKeyPolicyTest extends TestCase
         $store = new SiteKeyArrayStore(['sites.custom_sites' => '{not json']);
         $policy = SiteKeyPolicy::resolve($store, self::env([]));
         self::assertSame([], $policy->customSites);
-        self::assertCount(4, $policy->sites());
+        self::assertCount(5, $policy->sites());
     }
 
     public function testRoundTripsThroughTheStoredEncoding(): void

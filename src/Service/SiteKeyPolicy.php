@@ -41,8 +41,12 @@ final class SiteKeyPolicy
     /**
      * The sites the platform knows about — the server-side twin of
      * `tds-shared-pkg/src/install/profiles.ts`, which until now was the only
-     * place the four public origins were enumerated at all, and lived compiled
+     * place the public origins were enumerated at all, and lived compiled
      * into a frontend bundle where the API could never see it.
+     *
+     * Keep the two lists in step. A site missing here cannot be issued a key
+     * from the panel at all; a site missing there gets no setup wizard. Neither
+     * gap announces itself.
      *
      * `auth` is included even though it reads nothing from this API: the wizard
      * runs there too, and a site that cannot register is a site whose operator
@@ -57,6 +61,7 @@ final class SiteKeyPolicy
         ]],
         ['id' => 'blog', 'label' => 'Blog', 'origins' => ['https://blog.tracht-digital.de']],
         ['id' => 'tools', 'label' => 'Tools', 'origins' => ['https://tools.tracht-digital.de']],
+        ['id' => 'shop', 'label' => 'TDShop', 'origins' => ['https://shop.tracht-digital.de']],
         ['id' => 'auth', 'label' => 'Login', 'origins' => ['https://auth.tracht-digital.de']],
     ];
 
