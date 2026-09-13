@@ -147,6 +147,12 @@ final class SettingsStore implements SettingsStoreContract
         self::$schemaEnsured = true;
     }
 
+    /** Test seam — the schema flag is process-wide, like the site stores'. */
+    public static function resetSchemaFlagForTests(): void
+    {
+        self::$schemaEnsured = false;
+    }
+
     // --- crypto (AES-256-GCM; stored as "v1:base64(iv|tag|cipher)") ------------
 
     public static function encrypt(string $plain, string $key): string

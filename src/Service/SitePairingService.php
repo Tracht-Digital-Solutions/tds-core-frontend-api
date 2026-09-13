@@ -121,6 +121,9 @@ final class SitePairingService implements SiteConnections
         if ($this->rateLimiter !== null && !$this->rateLimiter->allow('create:' . $resourceType . ':' . $resourceId, 5, self::TTL_SECONDS)) {
             throw new SitePairingException('Zu viele Pairing-Versuche. Bitte später erneut versuchen.', 429, 'pairing_rate_limited');
         }
+        // cancelPending() revokes pending keys inside the transaction, so the
+        // key table's lazy DDL has to happen before it opens.
+        $this->keys->ensureSchema();
         $this->store->transaction(function () use (
             $publicId, $token, $resourceType, $resourceId, $origin, $profile, $bindings, $scopes, $expiresAt
         ): void {
@@ -175,6 +178,9 @@ final class SitePairingService implements SiteConnections
             throw new SitePairingException('Zu viele Pairing-Versuche. Bitte später erneut versuchen.', 429, 'pairing_rate_limited');
         }
 
+        // The site calls this in a request of its own, so neither table has been
+        // touched yet in this process; issueScoped() writes inside the transaction.
+        $this->keys->ensureSchema();
         $result = $this->store->transaction(function () use ($pairingToken, $profile, $origin, $apiBase): array|SitePairingException {
             $row = $this->store->pairingByTokenHash(hash('sha256', $pairingToken), true);
             if ($row === null) {
@@ -243,6 +249,8 @@ final class SitePairingService implements SiteConnections
             throw new SitePairingException('Finalisierung ist ungültig.', 401, 'invalid_finalize_token');
         }
 
+        // Revoking the replaced key happens inside the transaction; prepare its table first.
+        $this->keys->ensureSchema();
         $result = $this->store->transaction(function () use ($pairingId, $finalizeToken, $profile, $origin): SiteConnection|SitePairingException {
             $row = $this->store->pairingByPublicId($pairingId, true);
             if ($row === null) {
@@ -266,19 +274,21 @@ final class SitePairingService implements SiteConnections
                 if ($connection === null) {
                     throw new SitePairingException('Finalisierte Verbindung fehlt.', 503, 'connection_missing');
                 }
-                $this->ensureCors($origin);
                 return $connection;
             }
             if ($row['exchanged_at'] === null || $row['pending_site_key_id'] === null) {
                 throw new SitePairingException('Pairing wurde noch nicht ausgetauscht.', 409, 'pairing_not_exchanged');
             }
-            $connection = $this->store->finalize($row, $this->keys);
-            $this->ensureCors($origin);
-            return $connection;
+            return $this->store->finalize($row, $this->keys);
         });
         if ($result instanceof SitePairingException) {
             throw $result;
         }
+        // After the commit, never inside the transaction: the settings store
+        // creates its table lazily, and that DDL would commit the pairing
+        // transaction implicitly on MySQL. A repeated finalize is idempotent and
+        // runs this again, so a failure here is recovered by the site's retry.
+        $this->ensureCors($origin);
         return $result;
     }
 

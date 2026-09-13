@@ -196,6 +196,16 @@ lands with the assemble pipeline), so this base table **self-bootstraps**: an
 idempotent `CREATE TABLE IF NOT EXISTS` runs once per process. When the migrator
 lands, move that DDL into a base migration and drop `ensureSchema()`.
 
+**That DDL must never run inside a transaction.** MySQL commits an open
+transaction implicitly on any DDL, a `CREATE TABLE IF NOT EXISTS` for a table
+that already exists included, and PHP 8's `commit()` then throws "There is no
+active transaction". The schema flag is per process, so every request starts
+without it. Prepare the schema before `beginTransaction()`:
+`SiteConnectionStore::transaction()` does this for its own table, and code that
+writes through `SiteKeyStore` inside it calls `$keys->ensureSchema()` first.
+Settings writes (`ensureCors()`) run after the commit. `SitePairingServiceTest`
+only exercises this against a real server: set `TDS_TEST_DB_DSN` to a MySQL 8.
+
 ## Live notification feed (`GET /me/notifications`)
 
 The single endpoint the panel shell polls on **every page**. Modules opt in by

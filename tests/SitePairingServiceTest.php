@@ -251,6 +251,70 @@ final class SitePairingServiceTest extends TestCase
         self::assertNotNull($this->pdo?->query('SELECT cancelled_at FROM app_site_pairing')->fetchColumn());
     }
 
+    public function testEveryStepPairsFromAFreshRequestAgainstAnExistingSchema(): void
+    {
+        // Production runs each step in a request of its own: the schema flags
+        // start false while the tables already exist. The lazy
+        // `CREATE TABLE IF NOT EXISTS` must not run inside a pairing
+        // transaction, because MySQL commits it implicitly on DDL and PHP 8's
+        // commit() then throws "There is no active transaction".
+        $fresh = function (): SitePairingService {
+            SiteConnectionStore::resetSchemaFlagForTests();
+            SiteKeyStore::resetSchemaFlagForTests();
+            return $this->dbService(static fn (): array => ['status' => 503]);
+        };
+        self::assertNull($fresh()->get('tools', 'tools'));
+
+        $pairing = $fresh()->createPairing(
+            'tools',
+            'tools',
+            'http://localhost:4322',
+            'tools',
+            ['tools' => 'tools'],
+            ['/tools/catalog'],
+        );
+        $fresh()->deliverPairing($pairing, 'http://localhost:8100');
+        $payload = $fresh()->exchange($pairing->pairingToken, 'tools', $pairing->origin, 'http://localhost:8100');
+        $connection = $fresh()->finalize($payload['pairing_id'], $payload['finalize_token'], 'tools', $pairing->origin);
+
+        self::assertSame(SiteConnection::CONNECTED, $connection->status);
+        self::assertTrue($fresh()->delete('tools', 'tools'));
+    }
+
+    public function testFinalizeRecordsTheSiteOriginForCorsAfterTheCommit(): void
+    {
+        $service = $this->dbService(static fn (): array => ['status' => 503]);
+        [$pairing, $payload] = $this->exchange($service, 'blog', 'hauptblog', 4321);
+
+        // The settings table is created lazily by finalize itself, as on a host
+        // where nothing has written a setting yet.
+        $this->pdo?->exec('DROP TABLE IF EXISTS app_setting');
+        \Tds\CoreFrontendApi\Service\SettingsStore::resetSchemaFlagForTests();
+        SiteConnectionStore::resetSchemaFlagForTests();
+        SiteKeyStore::resetSchemaFlagForTests();
+        $settings = new \Tds\CoreFrontendApi\Service\SettingsStore($this->pdo, 'test-encryption-key');
+        $withSettings = new SitePairingService(
+            new SiteConnectionStore($this->pdo, 'test-encryption-key'),
+            $this->keys(),
+            'test-encryption-key',
+            null,
+            true,
+            $settings,
+        );
+
+        $connection = $withSettings->finalize($payload['pairing_id'], $payload['finalize_token'], 'blog', $pairing->origin);
+
+        self::assertSame(SiteConnection::CONNECTED, $connection->status);
+        self::assertContains(
+            $pairing->origin,
+            \Tds\CoreFrontendApi\Service\CorsConfig::split((string) $settings->get(
+                \Tds\CoreFrontendApi\Service\CorsConfig::NAMESPACE,
+                \Tds\CoreFrontendApi\Service\CorsConfig::KEY_ORIGINS,
+                '',
+            )),
+        );
+    }
+
     private function validationOnlyService(): SitePairingService
     {
         $store = (new \ReflectionClass(SiteConnectionStore::class))->newInstanceWithoutConstructor();

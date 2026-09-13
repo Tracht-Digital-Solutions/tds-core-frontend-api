@@ -268,7 +268,12 @@ final class SiteKeyStore implements SiteKeys
         return $slug === '' ? 'site' : substr($slug, 0, 24);
     }
 
-    private function ensureSchema(): void
+    /**
+     * Idempotent, once per process. Public because it has to run BEFORE a
+     * transaction that issues or revokes keys: inside one, the DDL commits
+     * that transaction implicitly on MySQL (see SiteConnectionStore::transaction()).
+     */
+    public function ensureSchema(): void
     {
         if (self::$schemaEnsured) {
             return;

@@ -58,6 +58,8 @@ final class SiteConnectionStore
 
     public function delete(string $resourceType, string $resourceId, SiteKeyStore $keys): bool
     {
+        // The callback revokes keys; their table's DDL must not run inside it.
+        $keys->ensureSchema();
         return $this->transaction(function () use ($resourceType, $resourceId, $keys): bool {
             // Deleting a connection is also a revocation of every invitation
             // that could recreate it. Without this, an already exchanged but
@@ -275,6 +277,15 @@ final class SiteConnectionStore
     {
         $owned = !$this->pdo->inTransaction();
         if ($owned) {
+            // Schema first, transaction second. MySQL commits an open
+            // transaction implicitly on ANY DDL, `CREATE TABLE IF NOT EXISTS`
+            // for a table that already exists included, so the lazy check
+            // inside the callback ended the transaction and PHP 8's commit()
+            // threw "There is no active transaction". The flag is per process
+            // and every request starts without it: that was the first pairing
+            // of every request. A caller that also writes through another
+            // lazily created store prepares that schema before calling this.
+            $this->ensureSchema();
             $this->pdo->beginTransaction();
         }
         try {
