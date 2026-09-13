@@ -206,6 +206,14 @@ writes through `SiteKeyStore` inside it calls `$keys->ensureSchema()` first.
 Settings writes (`ensureCors()`) run after the commit. `SitePairingServiceTest`
 only exercises this against a real server: set `TDS_TEST_DB_DSN` to a MySQL 8.
 
+**Read a DATETIME back in the zone it was written in.** The pairing tables hold
+`gmdate()` values — UTC wall-clock times without a zone — and `strtotime()`
+reads a zone-less string in PHP's default timezone. On a host set to
+Europe/Berlin that made every pairing two hours old at birth (410
+`pairing_expired`), while CLI PHP on a dev machine defaults to UTC and no test
+saw it. Name the zone when reading (`SitePairingService::utcTimestamp()`), and
+run the suite with `php -d date.timezone=Europe/Berlin` when touching time.
+
 ## Live notification feed (`GET /me/notifications`)
 
 The single endpoint the panel shell polls on **every page**. Modules opt in by
