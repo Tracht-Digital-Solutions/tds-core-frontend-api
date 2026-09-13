@@ -16,9 +16,11 @@ use Tds\Frontend\Contract\SiteConnection;
 final class SitePairingServiceTest extends TestCase
 {
     private ?PDO $pdo = null;
+    private string $timezone = 'UTC';
 
     protected function setUp(): void
     {
+        $this->timezone = date_default_timezone_get();
         SiteConnectionStore::resetSchemaFlagForTests();
         SiteKeyStore::resetSchemaFlagForTests();
 
@@ -37,6 +39,7 @@ final class SitePairingServiceTest extends TestCase
 
     protected function tearDown(): void
     {
+        date_default_timezone_set($this->timezone);
         if ($this->pdo !== null) {
             $this->dropTables();
         }
@@ -335,6 +338,21 @@ final class SitePairingServiceTest extends TestCase
                 '',
             )),
         );
+    }
+
+    public function testPairingWorksOnAHostWhoseTimezoneIsNotUtc(): void
+    {
+        // expires_at is a UTC wall-clock time without a zone. Read back in PHP's
+        // default timezone, a ten-minute pairing on a Europe/Berlin host was two
+        // hours old at birth, and every exchange ended in 410 pairing_expired.
+        date_default_timezone_set('Europe/Berlin');
+        $service = $this->dbService(static fn (): array => ['status' => 503]);
+
+        [$pairing, $payload] = $this->exchange($service, 'tools', 'tools', 4322);
+        $connection = $service->finalize($payload['pairing_id'], $payload['finalize_token'], 'tools', $pairing->origin);
+
+        self::assertSame(SiteConnection::CONNECTED, $connection->status);
+        self::assertEqualsWithDelta(time() + SitePairingService::TTL_SECONDS, strtotime($pairing->expiresAt), 5);
     }
 
     private function validationOnlyService(): SitePairingService

@@ -167,7 +167,7 @@ final class SitePairingService implements SiteConnections
             $profile,
             $bindings,
             $scopes,
-            gmdate('c', strtotime($expiresAt) ?: time() + self::TTL_SECONDS),
+            gmdate('c', self::utcTimestamp($expiresAt) ?: time() + self::TTL_SECONDS),
         );
     }
 
@@ -323,7 +323,19 @@ final class SitePairingService implements SiteConnections
     /** @param array<string,mixed> $row */
     private static function isExpired(array $row): bool
     {
-        return (strtotime((string) $row['expires_at']) ?: 0) < time();
+        return (self::utcTimestamp((string) $row['expires_at']) ?: 0) < time();
+    }
+
+    /**
+     * `expires_at` is a UTC wall-clock time without a zone: gmdate() writes it,
+     * and a DATETIME column keeps it that way. strtotime() reads such a string
+     * in PHP's default timezone, so on a host set to Europe/Berlin every
+     * ten-minute pairing was two hours old at birth, and each exchange ended in
+     * 410 `pairing_expired`. The zone has to be named when reading it back.
+     */
+    private static function utcTimestamp(string $datetime): int|false
+    {
+        return strtotime($datetime . ' UTC');
     }
 
     private function ensureCors(string $origin): void
