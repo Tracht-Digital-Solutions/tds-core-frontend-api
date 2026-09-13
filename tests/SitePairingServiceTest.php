@@ -119,6 +119,28 @@ final class SitePairingServiceTest extends TestCase
         self::assertStringNotContainsString($pairing->pairingToken, (string) $delivery->error);
     }
 
+    public function testDeliveryReportsTheCodeTheSiteRefusedWith(): void
+    {
+        // The site's log sits on another host. Its refusal code is the only
+        // diagnosis an operator gets, so it has to reach the admin UI.
+        $service = $this->dbService(static fn (): array => ['status' => 422, 'body' => '{"error":"invalid_origin"}']);
+        $pairing = $service->createPairing('tools', 'tools', 'http://localhost:4322', 'tools', ['tools' => 'tools'], ['/tools/catalog']);
+
+        $delivery = $service->deliverPairing($pairing, 'http://localhost:8100');
+
+        self::assertFalse($delivery->delivered);
+        self::assertSame('HTTP 422: invalid_origin', $delivery->error);
+        self::assertNotNull($delivery->fallbackUrl);
+    }
+
+    public function testDeliveryPassesOnAPlainCodeOnlyFromTheRemoteBody(): void
+    {
+        $service = $this->dbService(static fn (): array => ['status' => 500, 'body' => '{"error":"<b>Fatal</b> in /var/www"}']);
+        $pairing = $service->createPairing('tools', 'tools', 'http://localhost:4322', 'tools', ['tools' => 'tools'], ['/tools/catalog']);
+
+        self::assertSame('HTTP 500', $service->deliverPairing($pairing, 'http://localhost:8100')->error);
+    }
+
     public function testExchangeRejectsAForgedApiOriginAndRemainsUsableAtThePinnedOne(): void
     {
         $service = $this->dbService(static fn (): array => ['status' => 503]);

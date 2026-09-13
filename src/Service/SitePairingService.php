@@ -78,8 +78,25 @@ final class SitePairingService implements SiteConnections
             $this->store->get($pairing->resourceType, $pairing->resourceId),
             $unsafe ? null : $pairing->installUrl($apiBase),
             $pairing->expiresAt,
-            $unsafe ? 'Unsicheres oder privates Ziel abgelehnt' : ($status > 0 ? 'HTTP ' . $status : 'Site nicht erreichbar'),
+            $unsafe ? 'Unsicheres oder privates Ziel abgelehnt' : ($status > 0 ? self::refusal($status, $result['body'] ?? null) : 'Site nicht erreichbar'),
         );
+    }
+
+    /**
+     * "HTTP 422: invalid_origin" rather than "HTTP 422".
+     *
+     * A site refuses a pairing with `{"error": "<code>"}`, and that code is the
+     * whole diagnosis: the site's own log sits on another host, which the
+     * operator may not be able to read. Only a plain code is passed on — the
+     * body comes from a remote server and ends up in the admin UI.
+     */
+    private static function refusal(int $status, mixed $body): string
+    {
+        $decoded = is_string($body) ? json_decode($body, true) : null;
+        $code = is_array($decoded) ? ($decoded['error'] ?? null) : null;
+        return is_string($code) && preg_match('/^[a-z][a-z0-9_]{0,63}$/', $code) === 1
+            ? 'HTTP ' . $status . ': ' . $code
+            : 'HTTP ' . $status;
     }
 
     public function get(string $resourceType, string $resourceId): ?SiteConnection
@@ -484,7 +501,7 @@ final class SitePairingService implements SiteConnections
         return rtrim(strtr(base64_encode(random_bytes($bytes)), '+/', '-_'), '=');
     }
 
-    /** @return array{status:int,unsafe?:bool} */
+    /** @return array{status:int,unsafe?:bool,body?:string|null} */
     private static function post(string $url, string $body, bool $allowLocal): array
     {
         $parts = parse_url($url);
@@ -521,9 +538,9 @@ final class SitePairingService implements SiteConnections
             CURLOPT_FOLLOWLOCATION => false,
             CURLOPT_RESOLVE => $resolve,
         ]);
-        curl_exec($ch);
+        $response = curl_exec($ch);
         $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
         curl_close($ch);
-        return ['status' => $status];
+        return ['status' => $status, 'body' => is_string($response) ? substr($response, 0, 4096) : null];
     }
 }
