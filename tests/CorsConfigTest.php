@@ -5,6 +5,7 @@ namespace Tds\CoreFrontendApi\Tests;
 
 use PHPUnit\Framework\TestCase;
 use Tds\CoreFrontendApi\Service\CorsConfig;
+use Tds\CoreFrontendApi\Service\SiteKeyPolicy;
 use Tds\Frontend\Contract\SettingsStore as SettingsStoreContract;
 
 /** An in-memory settings store — the class under test only ever reads one key. */
@@ -68,6 +69,19 @@ final class CorsConfigTest extends TestCase
         $config = CorsConfig::resolve(new ArrayStore(), self::env([]));
 
         self::assertSame(CorsConfig::BASELINE, $config->origins());
+    }
+
+    public function testEveryKnownSiteIsAFirstPartyOrigin(): void
+    {
+        // `SiteKeyPolicy::KNOWN` is where the platform enumerates its own public
+        // sites. The shop was added there and never here, so its cart and
+        // checkout — browser calls to /shop/quote and /shop/checkout — were
+        // refused by every browser in production while the site key worked.
+        foreach (SiteKeyPolicy::KNOWN as $site) {
+            foreach ($site['origins'] as $origin) {
+                self::assertContains($origin, CorsConfig::BASELINE, "{$site['id']} is not CORS-allowed");
+            }
+        }
     }
 
     public function testEnvAndStoredEntriesBothAdd(): void

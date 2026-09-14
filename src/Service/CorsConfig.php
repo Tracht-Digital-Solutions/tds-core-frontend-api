@@ -65,6 +65,12 @@ final class CorsConfig
         'https://management.tracht-digital.de',
         'https://app.tracht-digital.de',
         'https://tools.tracht-digital.de',
+        // The shop's cart and checkout islands call /shop/quote,
+        // /shop/payment-methods, /shop/checkout and /shop/order from the
+        // browser. Without this entry every one of them was dropped by the
+        // browser in production — a shop that renders its catalogue and cannot
+        // take an order, with nothing logged anywhere.
+        'https://shop.tracht-digital.de',
         'https://auth.tracht-digital.de',
     ];
 
