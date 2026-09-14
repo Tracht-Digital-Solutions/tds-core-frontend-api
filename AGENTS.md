@@ -214,6 +214,31 @@ Europe/Berlin that made every pairing two hours old at birth (410
 saw it. Name the zone when reading (`SitePairingService::utcTimestamp()`), and
 run the suite with `php -d date.timezone=Europe/Berlin` when touching time.
 
+**PHP and every DB session run in Europe/Berlin, pinned (0.19.5).** `createApp()`
+calls `Support\TimeZone::pinPhp()`, and the container's PDO binding calls
+`pinSession()`. Production already ran there on both sides — PHP's
+`date.timezone` and the MySQL session default — so every module's `NOW()` /
+`CURRENT_TIMESTAMP` column (`created_at`, `updated_at`, `paired_at`,
+`last_seen_at`, the shop's `invoiced_at`) holds Berlin wall-clock time. CLI PHP
+and the CI database containers default to UTC, where the same comparison is two
+hours off. The pin converts nothing, and these values are **UTC** with readers
+of their own:
+
+| Value | Written with | Read with |
+|---|---|---|
+| pairing `expires_at` | `gmdate()` (`SitePairingService`) | `SitePairingService::utcTimestamp()` |
+| keyless-read counter `first_at` / `last_at` (settings JSON) | `gmdate('c')` (`SiteKeyMiddleware`) | ISO 8601 with offset, zone-safe |
+| tds-ext-shop `price_checked_at`, `published_at` | `UTC_TIMESTAMP()` / `gmdate()` | `Support\UtcDateTime` |
+| tds-ext-shop `shop_order.withdrawal_consent_at`, `fulfilled_at`, the sync queue's `next_call_at` / `locked_until`, `shop_sync_run.finished_at` | `UTC_TIMESTAMP()` | compared against `UTC_TIMESTAMP()` only |
+
+Never compare the two conventions in one condition. The official MySQL/MariaDB
+images ship empty time-zone tables, so the named `SET` can fail: a session
+already at Berlin's offset (a host whose `SYSTEM` zone is Berlin) is then left
+alone, because its DST rules read old TIMESTAMP values correctly, and any other
+session gets the current offset (`tests/TimeZoneTest`). Moving everything to UTC
+means converting existing rows DST-correctly across every module's tables — a
+separate decision (tds-ext-shop-pkg#2), not a refactor.
+
 ## Live notification feed (`GET /me/notifications`)
 
 The single endpoint the panel shell polls on **every page**. Modules opt in by

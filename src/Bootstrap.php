@@ -63,6 +63,9 @@ final class Bootstrap
 {
     public static function createApp(string $rootDir): App
     {
+        // PHP runs in production's zone, Europe/Berlin — see Support\TimeZone.
+        Support\TimeZone::pinPhp();
+
         if (file_exists($rootDir . '/.env')) {
             Dotenv::createImmutable($rootDir)->load();
         }
@@ -913,11 +916,15 @@ final class Bootstrap
                 self::env('DB_PORT', '3306'),
                 self::env('DB_NAME', ''),
             );
-            return new PDO($dsn, self::env('DB_USER', ''), self::env('DB_PASS', ''), [
+            $pdo = new PDO($dsn, self::env('DB_USER', ''), self::env('DB_PASS', ''), [
                 PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
                 PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
                 PDO::ATTR_EMULATE_PREPARES => false,
             ]);
+            // Every module's NOW()/CURRENT_TIMESTAMP in production's zone,
+            // Europe/Berlin — see Support\TimeZone.
+            Support\TimeZone::pinSession($pdo);
+            return $pdo;
         });
 
         // Core SMTP mailer. Configured DB-first (Einstellungen → E-Mail (SMTP))
