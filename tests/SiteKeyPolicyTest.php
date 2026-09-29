@@ -110,7 +110,11 @@ final class SiteKeyPolicyTest extends TestCase
     public function testKnownSitesAreAlwaysPresent(): void
     {
         $ids = array_column(SiteKeyPolicy::resolve(null, self::env([]))->sites(), 'id');
-        self::assertSame(['landingpage', 'blog', 'tools', 'shop', 'auth'], $ids);
+        // The exact list, spelled out on purpose: this is the server half of
+        // `tds-shared/src/install/profiles.ts`, and a site missing from either
+        // side announces itself nowhere — no key can be issued for it here, no
+        // setup wizard exists for it there.
+        self::assertSame(['landingpage', 'blog', 'tools', 'shop', 'cards', 'auth'], $ids);
     }
 
     public function testCustomSitesFollowTheKnownOnes(): void
@@ -120,9 +124,14 @@ final class SiteKeyPolicyTest extends TestCase
         ])]);
         $sites = SiteKeyPolicy::resolve($store, self::env([]))->sites();
 
-        self::assertCount(6, $sites);
-        self::assertSame('kunde-a', $sites[5]['id']);
-        self::assertFalse($sites[5]['known']);
+        // Derived from KNOWN, not a literal: this test is about ORDER — custom
+        // entries follow the coded ones — and a hard number made it fail every
+        // time an unrelated site was added, which reads as a regression in the
+        // thing being tested rather than in the list.
+        $known = count(SiteKeyPolicy::KNOWN);
+        self::assertCount($known + 1, $sites);
+        self::assertSame('kunde-a', $sites[$known]['id']);
+        self::assertFalse($sites[$known]['known']);
         self::assertTrue($sites[0]['known']);
     }
 
@@ -199,7 +208,7 @@ final class SiteKeyPolicyTest extends TestCase
         $store = new SiteKeyArrayStore(['sites.custom_sites' => '{not json']);
         $policy = SiteKeyPolicy::resolve($store, self::env([]));
         self::assertSame([], $policy->customSites);
-        self::assertCount(5, $policy->sites());
+        self::assertCount(count(SiteKeyPolicy::KNOWN), $policy->sites());
     }
 
     public function testRoundTripsThroughTheStoredEncoding(): void

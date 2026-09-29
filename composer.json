@@ -16,6 +16,7 @@
     "symfony/mime": "^7.4",
     "tracht-digital-solutions/tds-ext-billing": "*",
     "tracht-digital-solutions/tds-ext-blog-cms": "*",
+    "tracht-digital-solutions/tds-ext-cards": "*",
     "tracht-digital-solutions/tds-ext-contact-tickets": "*",
     "tracht-digital-solutions/tds-ext-customers": "*",
     "tracht-digital-solutions/tds-ext-documents": "*",
@@ -94,6 +95,10 @@
     {
       "type": "path",
       "url": "../tds-ext-shop-pkg"
+    },
+    {
+      "type": "path",
+      "url": "../tds-ext-cards-pkg"
     }
   ],
   "autoload": {

@@ -5,6 +5,7 @@ namespace Tds\CoreFrontendApi;
 
 use Tds\Ext\Billing\BillingModule;
 use Tds\Ext\BlogCms\BlogCmsModule;
+use Tds\Ext\Cards\CardsModule;
 use Tds\Ext\ContactTickets\ContactTicketsModule;
 use Tds\Ext\Customers\CustomersModule;
 use Tds\Ext\Documents\DocumentsModule;
@@ -47,6 +48,7 @@ final class Modules
             new WebsiteCmsModule(),
             new BlogCmsModule(),
             new ShopModule(),
+            new CardsModule(),
         ];
     }
 }

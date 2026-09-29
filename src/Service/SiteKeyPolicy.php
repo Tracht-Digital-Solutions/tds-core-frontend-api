@@ -62,6 +62,18 @@ final class SiteKeyPolicy
         ['id' => 'blog', 'label' => 'Blog', 'origins' => ['https://blog.tracht-digital.de']],
         ['id' => 'tools', 'label' => 'Tools', 'origins' => ['https://tools.tracht-digital.de']],
         ['id' => 'shop', 'label' => 'TDShop', 'origins' => ['https://shop.tracht-digital.de']],
+        // One app answers every customer's business-card domain and picks the
+        // card by `Host`, so only the fallback origin is listed. The customer
+        // domains are aliases of the same deployment, and a card page makes no
+        // browser call at all — it is rendered on the server — so they need
+        // neither a CORS entry nor a key of their own. Listing them would
+        // invite an operator to pair each one.
+        //
+        // The fallback origin DOES need a CORS entry, and for a reason that is
+        // easy to miss: the setup wizard runs at `/install` on it and probes
+        // `/content/cards` from the browser. `CorsConfigTest` is what catches
+        // the omission — it did, here.
+        ['id' => 'cards', 'label' => 'Visitenkarten', 'origins' => ['https://karte.tracht-digital.de']],
         ['id' => 'auth', 'label' => 'Login', 'origins' => ['https://auth.tracht-digital.de']],
     ];
 

@@ -71,6 +71,15 @@ final class CorsConfig
         // browser in production — a shop that renders its catalogue and cannot
         // take an order, with nothing logged anywhere.
         'https://shop.tracht-digital.de',
+        // The business cards, and only their fallback origin.
+        //
+        // A card page itself makes no browser call at all — it is rendered on
+        // the server — so the customer domains that alias the same app need no
+        // entry here. This one is for the SETUP WIZARD, which runs at
+        // `/install` on this origin and probes `/content/cards` from the
+        // browser to report how many cards the API knows. Without it the wizard
+        // reports a connection failure on a perfectly configured host.
+        'https://karte.tracht-digital.de',
         'https://auth.tracht-digital.de',
     ];
 
