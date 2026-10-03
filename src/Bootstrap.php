@@ -67,7 +67,12 @@ final class Bootstrap
         Support\TimeZone::pinPhp();
 
         if (file_exists($rootDir . '/.env')) {
-            Dotenv::createImmutable($rootDir)->load();
+            // UNSAFE = also putenv(). Every extension's env fallback reads
+            // getenv() (DOCUMENT_ROOT_DIR, DOCUMENT_SIGN_SECRET, DEEPL_*,
+            // STRIPE_*, …), and the immutable repository only fills
+            // $_ENV/$_SERVER — so on the host each of those read ''. The
+            // gateway's dispatcher restores the process env after the request.
+            Dotenv::createUnsafeImmutable($rootDir)->load();
         }
 
         // DI container of the core services extensions may resolve (Mailer /
@@ -305,6 +310,12 @@ final class Bootstrap
             }
             $store = $container->get(SettingsStoreContract::class);
             $ns = (string) $args['ns'];
+            // CORS has its own route, which validates every origin; through
+            // this generic one `*` or a malformed origin went straight in.
+            if ($ns === Service\CorsConfig::NAMESPACE) {
+                $response->getBody()->write(json_encode(['error' => 'Use PUT /admin/cors for this namespace'], JSON_THROW_ON_ERROR));
+                return $response->withStatus(422)->withHeader('Content-Type', 'application/json');
+            }
             $written = 0;
             foreach ($items as $item) {
                 if (!is_array($item)) {
@@ -315,12 +326,21 @@ final class Bootstrap
                     continue;
                 }
                 $secret = (bool) ($item['secret'] ?? false);
+                // An array cast to string is the word "Array".
+                if (!is_scalar($item['value'] ?? '')) {
+                    continue;
+                }
                 $value = (string) ($item['value'] ?? '');
                 // A blank secret means "keep existing" — skip the write.
                 if ($secret && $value === '') {
                     continue;
                 }
-                $store->set($ns, $key, $value, $secret);
+                try {
+                    $store->set($ns, $key, $value, $secret);
+                } catch (Service\SettingsEncryptionUnavailable $e) {
+                    $response->getBody()->write(json_encode(['error' => $e->getMessage(), 'written' => $written], JSON_THROW_ON_ERROR));
+                    return $response->withStatus(503)->withHeader('Content-Type', 'application/json');
+                }
                 $written++;
             }
             $response->getBody()->write(json_encode(['ok' => true, 'written' => $written], JSON_THROW_ON_ERROR));

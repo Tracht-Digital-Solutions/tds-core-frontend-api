@@ -32,6 +32,42 @@ final class SettingsStoreTest extends TestCase
         self::assertNull(SettingsStore::decrypt('v1:!!!!', 'right-key'));
     }
 
+    private function dbStore(string $key): SettingsStore
+    {
+        $dsn = getenv('TDS_TEST_DB_DSN') ?: '';
+        if ($dsn === '') {
+            self::markTestSkipped('Set TDS_TEST_DB_DSN to run the DB-backed settings tests.');
+        }
+        $pdo = new \PDO($dsn, getenv('TDS_TEST_DB_USER') ?: null, getenv('TDS_TEST_DB_PASS') ?: null, [
+            \PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION,
+            \PDO::ATTR_DEFAULT_FETCH_MODE => \PDO::FETCH_ASSOC,
+        ]);
+        $pdo->exec('DROP TABLE IF EXISTS app_setting');
+        SettingsStore::resetSchemaFlagForTests();
+        return new SettingsStore($pdo, $key);
+    }
+
+    public function testRefusesASecretWithoutAnEncryptionKey(): void
+    {
+        // Encrypting under '' is encrypting under sha256(''), which anyone can
+        // compute — the write must fail instead.
+        $store = $this->dbStore('');
+        $this->expectException(\Tds\CoreFrontendApi\Service\SettingsEncryptionUnavailable::class);
+        $store->set('blog-cms', 'deepl_key', 'abc', true);
+    }
+
+    public function testASecretKeyStaysSecretWhateverTheCallerSays(): void
+    {
+        $store = $this->dbStore('unit-test-key');
+        $store->set('mail', 'password', 'first', true);
+        // The generic route takes the flag from the client; a plaintext
+        // overwrite used to make getSecret() return null for good.
+        $store->set('mail', 'password', 'second', false);
+
+        self::assertSame('second', $store->getSecret('mail', 'password'));
+        self::assertNull($store->get('mail', 'password'));
+    }
+
     public function testAdminSettingsRequireAdmin(): void
     {
         // Anonymous (no token) → 401 on both read and write, before any DB touch.

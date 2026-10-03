@@ -90,8 +90,10 @@ final class MailConfig
         $storedDsn = $read('dsn', true);
         $host = $read('host', false);
         $storedPort = $read('port', false);
-        $port = $storedPort === '' ? 587 : (int) $storedPort;
         $security = self::normalizeSecurity($read('security', false));
+        // Implicit TLS listens on 465; a blank port with `ssl` used to become
+        // smtps://host:587, which no server answers. Matches customer-api.
+        $port = $storedPort !== '' ? (int) $storedPort : ($security === self::SECURITY_IMPLICIT ? 465 : 587);
         $user = $read('user', false);
         $password = $read('password', true);
 

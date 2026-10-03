@@ -257,9 +257,9 @@ final class MigrationRunner
     }
 
     /**
-     * Signature over every migration filename across all paths. Adding/removing a
-     * migration changes it (→ re-run on next deploy); a plain redeploy keeps it
-     * (→ stays a no-op).
+     * Signature over the target database and every migration filename across
+     * all paths. Adding/removing a migration, or switching databases, changes
+     * it (→ re-run); a plain redeploy keeps it (→ stays a no-op).
      */
     private function signature(): string
     {
@@ -272,7 +272,11 @@ final class MigrationRunner
             }
         }
         sort($names);
-        return substr(hash('sha256', implode('|', $names)), 0, 16);
+        // The DATABASE is part of the key: keyed on the file set alone, pointing
+        // the service at a new or restored database (other DB_NAME/host) never
+        // migrated it again, and /healthz stayed on `no-schema` for good.
+        $target = ($this->db['host'] ?? '') . ':' . ($this->db['port'] ?? '') . '/' . ($this->db['name'] ?? '');
+        return substr(hash('sha256', $target . '#' . implode('|', $names)), 0, 16);
     }
 
     private function log(string $level, string $message): void

@@ -57,10 +57,27 @@ final class SettingsStore implements SettingsStoreContract
         return $stored === '' ? null : self::decrypt($stored, $this->encryptionKey);
     }
 
-    /** Upsert a value. A secret is encrypted at rest. */
+    /**
+     * Upsert a value. A secret is encrypted at rest.
+     *
+     * Two refusals:
+     *  - a key that is ALREADY secret stays secret, whatever the caller says.
+     *    The generic settings route takes the flag from the client, so a
+     *    write could turn `mail/password` into plaintext — which every reader
+     *    (`getSecret`) then silently treated as unset;
+     *  - no secret without SETTINGS_ENCRYPTION_KEY. "Encrypted" under the
+     *    empty key is encrypted under `sha256('')`, which anyone can compute.
+     *
+     * @throws SettingsEncryptionUnavailable
+     */
     public function set(string $namespace, string $key, string $value, bool $secret): void
     {
         $this->ensureSchema();
+        $existing = $this->row($namespace, $key);
+        $secret = $secret || ($existing !== null && (int) $existing['is_secret'] === 1);
+        if ($secret && $value !== '' && trim($this->encryptionKey) === '') {
+            throw new SettingsEncryptionUnavailable('SETTINGS_ENCRYPTION_KEY is not configured — secrets cannot be stored');
+        }
         $stored = $secret && $value !== '' ? self::encrypt($value, $this->encryptionKey) : $value;
         $stmt = $this->pdo->prepare(
             'INSERT INTO app_setting (namespace, skey, svalue, is_secret)
