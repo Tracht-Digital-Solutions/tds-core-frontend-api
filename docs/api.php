@@ -269,6 +269,43 @@ return [
     ],
     [
         'method' => 'GET',
+        'pattern' => '/admin/stripe',
+        'tag' => 'Einstellungen',
+        'summary' => 'Zentrales Stripe-Konto und Webhooks lesen',
+        'description' => 'Woher der aktive Schlüssel kommt (`source`: `db` = Einstellungen, `env` = '
+            . '`STRIPE_SECRET_KEY` des Hosts, `none`), Test- oder Live-Modus und die letzten vier '
+            . 'Zeichen — nie der Schlüssel selbst. `webhooks` listet je aktivem Modul mit '
+            . 'Stripe-Zahlungen die Endpunkt-URL, die zu abonnierenden Ereignisse und ob dessen '
+            . 'Signing Secret hinterlegt ist. Ein Modul mit eigenem Schlüssel übersteuert das '
+            . 'zentrale Konto nur für sich.',
+        'auth' => 'admin',
+        'params' => [],
+        'responses' => [
+            ['status' => 200, 'description' => '`{configured, source, mode, last4, webhooks: [{module, label, url, events, secretNamespace, secretKey, secretConfigured}]}`'],
+            ['status' => 401, 'description' => 'Keine Sitzung.'],
+            ['status' => 403, 'description' => 'Angemeldet, aber kein Admin.'],
+        ],
+    ],
+    [
+        'method' => 'POST',
+        'pattern' => '/admin/stripe/test',
+        'tag' => 'Einstellungen',
+        'summary' => 'Verbindung zum zentralen Stripe-Konto prüfen',
+        'description' => 'Liest den Kontostand (`GET /v1/balance`) — ein Aufruf ohne Nebenwirkung. '
+            . 'Ein gespeicherter Schlüssel ist noch kein funktionierender; ohne diesen Test wäre '
+            . 'der erste Beweis eine gescheiterte Zahlung.',
+        'auth' => 'admin',
+        'params' => [],
+        'responses' => [
+            ['status' => 200, 'description' => '`{ok: true, mode}` — Stripe hat den Schlüssel angenommen.'],
+            ['status' => 401, 'description' => 'Keine Sitzung.'],
+            ['status' => 403, 'description' => 'Angemeldet, aber kein Admin.'],
+            ['status' => 422, 'description' => 'Kein Stripe-Schlüssel konfiguriert.'],
+            ['status' => 502, 'description' => 'Stripe hat abgelehnt oder war nicht erreichbar (`error` enthält den Grund).'],
+        ],
+    ],
+    [
+        'method' => 'GET',
         'pattern' => '/admin/cors',
         'tag' => 'Einstellungen',
         'summary' => 'Effektive CORS-Freigabe lesen',

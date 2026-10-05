@@ -36,6 +36,7 @@ use Tds\CoreFrontendApi\Service\SiteKeyStore;
 use Tds\CoreFrontendApi\Service\SitePairingException;
 use Tds\CoreFrontendApi\Service\SitePairingService;
 use Tds\CoreFrontendApi\Service\SmtpMailer;
+use Tds\CoreFrontendApi\Service\StripeConfig;
 use Tds\CoreFrontendApi\Support\AnonymousUserContext;
 use Tds\CoreFrontendApi\Support\MigrationRunner;
 use Tds\Frontend\Contract\Email;
@@ -49,6 +50,10 @@ use Tds\Frontend\Contract\SiteConnectionIdentity;
 use Tds\Frontend\Contract\SiteConnections;
 use Tds\Frontend\Contract\SiteKeys;
 use Tds\Frontend\Contract\UserContext;
+use Tds\Frontend\Contract\Stripe\CurlStripeApi;
+use Tds\Frontend\Contract\Stripe\StripeApi;
+use Tds\Frontend\Contract\Stripe\StripeException;
+use Tds\Frontend\Contract\Stripe\StripeWebhookSource;
 
 /**
  * Wires the base panel API: env, Slim app, middleware, base routes, and the
@@ -432,6 +437,77 @@ final class Bootstrap
             }
 
             $response->getBody()->write(json_encode(['ok' => true, 'to' => $to], JSON_THROW_ON_ERROR));
+            return $response->withHeader('Content-Type', 'application/json');
+        });
+
+        // --- Zahlungen / Stripe (admin) -----------------------------------------
+        // The ONE Stripe account every charging module uses. The key is saved
+        // through the generic settings route (namespace `stripe`, secret); this
+        // pair reports what is EFFECTIVE (stored key or the host's
+        // STRIPE_SECRET_KEY), lists the webhook endpoints the composed modules
+        // expect, and proves the key works — saving is not charging.
+        $app->get('/admin/stripe', function (Request $request, Response $response) use ($container): Response {
+            $denied = self::denyUnlessAdmin($container, $response);
+            if ($denied !== null) {
+                return $denied;
+            }
+            $store = null;
+            try {
+                $store = $container->get(SettingsStoreContract::class);
+            } catch (\Throwable) {
+                // no DB — the secret states below report "unknown"
+            }
+            $base = self::publicBase($request);
+            $webhooks = [];
+            foreach (Modules::enabled() as $module) {
+                if (!$module instanceof StripeWebhookSource) {
+                    continue;
+                }
+                foreach ($module->stripeWebhooks() as $hook) {
+                    $secret = null;
+                    try {
+                        $secret = $store?->getSecret($hook->secretNamespace, $hook->secretKey);
+                    } catch (\Throwable) {
+                    }
+                    $webhooks[] = [
+                        'module' => $module->id(),
+                        'label' => $hook->label,
+                        'url' => $base . $hook->path,
+                        'events' => $hook->events,
+                        'secretNamespace' => $hook->secretNamespace,
+                        'secretKey' => $hook->secretKey,
+                        'secretConfigured' => is_string($secret) && $secret !== '',
+                    ];
+                }
+            }
+            $payload = self::stripeConfig($container)->status() + ['webhooks' => $webhooks];
+            $response->getBody()->write(json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+            return $response->withHeader('Content-Type', 'application/json');
+        });
+
+        // A read-only call with the effective key: GET /v1/balance needs no
+        // object and creates nothing, and its `livemode` confirms test vs live.
+        $app->post('/admin/stripe/test', function (Request $request, Response $response) use ($container): Response {
+            $denied = self::denyUnlessAdmin($container, $response);
+            if ($denied !== null) {
+                return $denied;
+            }
+            $api = $container->get(StripeApi::class);
+            if (!$api->isConfigured()) {
+                $response->getBody()->write(json_encode(['ok' => false, 'error' => 'Kein Stripe-Schlüssel hinterlegt.'], JSON_THROW_ON_ERROR));
+                return $response->withStatus(422)->withHeader('Content-Type', 'application/json');
+            }
+            try {
+                $balance = $api->get('/balance');
+            } catch (StripeException $e) {
+                $response->getBody()->write(json_encode(['ok' => false, 'error' => $e->getMessage()], JSON_THROW_ON_ERROR));
+                // 502: Stripe (or the network to it) answered no — the request was fine.
+                return $response->withStatus(502)->withHeader('Content-Type', 'application/json');
+            }
+            $response->getBody()->write(json_encode([
+                'ok' => true,
+                'mode' => ($balance['livemode'] ?? false) === true ? 'live' : 'test',
+            ], JSON_THROW_ON_ERROR));
             return $response->withHeader('Content-Type', 'application/json');
         });
 
@@ -870,6 +946,37 @@ final class Bootstrap
             ->withHeader('Content-Type', 'application/json');
     }
 
+    /** The platform Stripe account, DB-first with STRIPE_SECRET_KEY as the env fallback. */
+    private static function stripeConfig(Container $container): StripeConfig
+    {
+        $store = null;
+        try {
+            $store = $container->get(SettingsStoreContract::class);
+        } catch (\Throwable) {
+            // No DB / no container binding — env-only.
+        }
+        return StripeConfig::resolve($store, static fn (string $k, ?string $d): string => self::env($k, $d));
+    }
+
+    /**
+     * The public origin modules' routes answer under, for the webhook list.
+     * This API is the gateway's catch-all, so a route's public path is its own
+     * path; an explicit X-Forwarded-Prefix is honoured all the same.
+     */
+    private static function publicBase(Request $request): string
+    {
+        $uri = $request->getUri();
+        $host = $uri->getHost();
+        $local = in_array($host, ['localhost', '127.0.0.1', '::1'], true);
+        // TLS ends at the proxy on the hosts, so the socket says http.
+        $scheme = $local ? ($uri->getScheme() ?: 'http') : 'https';
+        $port = $uri->getPort();
+        $authority = $host . ($port !== null && !in_array($port, [80, 443], true) ? ':' . $port : '');
+        $prefix = trim($request->getHeaderLine('X-Forwarded-Prefix'));
+        $prefix = preg_match('#^/[A-Za-z0-9_-]+$#', $prefix) === 1 ? $prefix : '';
+        return $scheme . '://' . $authority . $prefix;
+    }
+
     /**
      * SMTP configuration, read DB-first with `MAIL_DSN` as the env fallback.
      * Defensive so the settings page still renders without a database.
@@ -954,6 +1061,11 @@ final class Bootstrap
         // Lazy like every other binding: resolving MailConfig touches the
         // settings store, which touches PDO — doing that at boot would take the
         // service down on a host whose DB config is not in place yet.
+        // The platform's Stripe connection (Einstellungen → Zahlungen). Lazy for
+        // the same reason as the mailer below; modules resolve StripeApi and
+        // fall back to it when they hold no key of their own.
+        $container->set(StripeApi::class, static fn ($c): StripeApi => new CurlStripeApi(self::stripeConfig($c)->secretKey));
+
         $container->set(Mailer::class, static function ($c): Mailer {
             $config = self::mailConfig($c);
             if (!$config->isConfigured()) {
