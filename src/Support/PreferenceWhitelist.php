@@ -31,6 +31,12 @@ final class PreferenceWhitelist
         'locale' => ['de', 'en'],
         'notify_toast' => ['0', '1'],
         'notify_email' => ['0', '1'],
+        // The public sites' reading settings (tds-shared/prefs `PREF_VALUES`):
+        // text size of the blog reader and whether its two rails start open.
+        // Stored here so a signed-in reader gets them back on another device.
+        'reader_zoom' => ['0.9', '1', '1.1', '1.25', '1.4'],
+        'reader_sidenav' => ['open', 'collapsed'],
+        'reader_toc' => ['open', 'collapsed'],
     ];
 
     /**

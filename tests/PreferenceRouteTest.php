@@ -96,6 +96,17 @@ final class PreferenceRouteTest extends TestCase
         );
     }
 
+    public function testFilterAcceptsTheReaderSettingsOfThePublicSites(): void
+    {
+        // JSON numbers arrive as floats/ints: 1.25 → "1.25", 1 → "1".
+        self::assertSame(
+            ['reader_zoom' => '1.25', 'reader_sidenav' => 'open', 'reader_toc' => 'collapsed'],
+            PreferenceWhitelist::filter(['reader_zoom' => 1.25, 'reader_sidenav' => 'open', 'reader_toc' => 'collapsed']),
+        );
+        self::assertSame(['reader_zoom' => '1'], PreferenceWhitelist::filter(['reader_zoom' => 1]));
+        self::assertSame([], PreferenceWhitelist::filter(['reader_zoom' => '3', 'reader_toc' => 'half']));
+    }
+
     public function testFilterRejectsNonScalars(): void
     {
         self::assertSame([], PreferenceWhitelist::filter([
