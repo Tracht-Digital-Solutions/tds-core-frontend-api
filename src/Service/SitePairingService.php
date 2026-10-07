@@ -402,8 +402,12 @@ final class SitePairingService implements SiteConnections
             default => $type,
         };
         $id = trim($id);
-        if (!in_array($type, ['blog', 'website', 'tools'], true)) {
-            throw new SitePairingException('resource_type muss blog, website oder tools sein.');
+        // `cards` is the business-card app (tds-ext-cards): one connection,
+        // `cards`/`default`, for every customer domain. It was missing here, so
+        // the module's GET /cards/connection threw on every call (500) and its
+        // pairing could never be created.
+        if (!in_array($type, ['blog', 'website', 'tools', 'cards'], true)) {
+            throw new SitePairingException('resource_type muss blog, website, tools oder cards sein.');
         }
         if ($id === '' || strlen($id) > 191 || preg_match('/[\x00-\x1f\x7f]/', $id) === 1) {
             throw new SitePairingException('resource_id ist ungültig.');
@@ -418,8 +422,8 @@ final class SitePairingService implements SiteConnections
             'landing', 'website' => 'landingpage',
             default => $profile,
         };
-        if (!in_array($profile, ['blog', 'landingpage', 'tools'], true)) {
-            throw new SitePairingException('profile muss blog, landingpage oder tools sein.');
+        if (!in_array($profile, ['blog', 'landingpage', 'tools', 'cards'], true)) {
+            throw new SitePairingException('profile muss blog, landingpage, tools oder cards sein.');
         }
         return $profile;
     }
@@ -493,6 +497,7 @@ final class SitePairingService implements SiteConnections
                 '/content/legal',
             ],
             'tools' => ['/tools/catalog', '/tools/registry', '/tools/guides'],
+            'cards' => ['/content/card', '/content/cards'],
         };
     }
 
@@ -502,6 +507,7 @@ final class SitePairingService implements SiteConnections
             'blog' => 'blog',
             'website' => 'landingpage',
             'tools' => 'tools',
+            'cards' => 'cards',
         };
         if (!hash_equals($expected, $profile)) {
             throw new SitePairingException('CMS-Ressource und Site-Profil passen nicht zusammen.');

@@ -88,6 +88,9 @@ final class SitePairingServiceTest extends TestCase
             ['blog', 'main', 'tools', ['blog' => 'main'], ['/content/blog']],
             ['blog', 'main', 'blog', ['blog' => 'main'], ['/tools/catalog']],
             ['website', 'landing', 'landingpage', ['website' => 'landing'], ['/content']],
+            // The business-card app may read its card routes and nothing else.
+            ['cards', 'default', 'cards', ['cards' => 'default'], ['/content/blog']],
+            ['cards', 'default', 'landingpage', ['cards' => 'default'], ['/content/card']],
         ] as [$type, $id, $profile, $bindings, $scopes]) {
             try {
                 $service->createPairing($type, $id, 'http://localhost:4321', $profile, $bindings, $scopes);
@@ -96,6 +99,29 @@ final class SitePairingServiceTest extends TestCase
                 self::assertSame(422, $error->httpStatus);
             }
         }
+    }
+
+    /**
+     * tds-ext-cards pairs as `cards`/`default` with the `cards` profile. The
+     * service did not know the type: every GET /cards/connection threw (500 on
+     * the settings page) and the pairing could never be created.
+     */
+    public function testTheBusinessCardAppIsAPairableResource(): void
+    {
+        $service = $this->dbService(static fn (): array => ['status' => 503]);
+        self::assertNull($service->get('cards', 'default'));
+        $pairing = $service->createPairing(
+            'cards',
+            'default',
+            'http://localhost:4321',
+            'cards',
+            ['cards' => 'default'],
+            ['/content/card', '/content/cards'],
+        );
+        $service->deliverPairing($pairing, 'http://localhost:8100');
+        $payload = $service->exchange($pairing->pairingToken, 'cards', $pairing->origin, 'http://localhost:8100');
+        self::assertStringStartsWith('tdsk_cards_', $payload['connection']['site_key']);
+        self::assertSame(['/content/card', '/content/cards'], $payload['connection']['scopes']);
     }
 
     public function testDeliveryTransportFailureReturnsAFragmentOnlyFallback(): void
