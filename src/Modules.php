@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Tds\CoreFrontendApi;
 
+use Tds\Ext\Analytics\AnalyticsModule;
 use Tds\Ext\Billing\BillingModule;
 use Tds\Ext\BlogCms\BlogCmsModule;
 use Tds\Ext\Cards\CardsModule;
@@ -49,6 +50,7 @@ final class Modules
             new BlogCmsModule(),
             new ShopModule(),
             new CardsModule(),
+            new AnalyticsModule(),
         ];
     }
 }

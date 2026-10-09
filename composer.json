@@ -14,6 +14,7 @@
     "slim/slim": "^4.13",
     "symfony/mailer": "^7.4",
     "symfony/mime": "^7.4",
+    "tracht-digital-solutions/tds-ext-analytics": "*",
     "tracht-digital-solutions/tds-ext-billing": "*",
     "tracht-digital-solutions/tds-ext-blog-cms": "*",
     "tracht-digital-solutions/tds-ext-cards": "*",
@@ -99,6 +100,10 @@
     {
       "type": "path",
       "url": "../tds-ext-cards-pkg"
+    },
+    {
+      "type": "path",
+      "url": "../tds-ext-analytics-pkg"
     }
   ],
   "autoload": {

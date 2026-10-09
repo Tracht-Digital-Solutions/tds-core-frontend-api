@@ -8,7 +8,7 @@ service processes. It **must boot with zero modules**.
 
 Enabled modules (the union both products need): time-tracker, customers, billing, lexware, tools,
 messages, projects, documents, support-tickets, contact-tickets, live-chat-cta, website-cms, blog-cms,
-shop, cards.
+shop, cards, analytics.
 
 ## Base routes
 
