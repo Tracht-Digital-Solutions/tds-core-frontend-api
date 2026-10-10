@@ -25,6 +25,7 @@
     "tracht-digital-solutions/tds-ext-live-chat-cta": "*",
     "tracht-digital-solutions/tds-ext-messages": "*",
     "tracht-digital-solutions/tds-ext-projects": "*",
+    "tracht-digital-solutions/tds-ext-referrals": "*",
     "tracht-digital-solutions/tds-ext-shop": "*",
     "tracht-digital-solutions/tds-ext-support-tickets": "*",
     "tracht-digital-solutions/tds-ext-time-tracker": "*",
@@ -96,6 +97,10 @@
     {
       "type": "path",
       "url": "../tds-ext-shop-pkg"
+    },
+    {
+      "type": "path",
+      "url": "../tds-ext-referrals-pkg"
     },
     {
       "type": "path",

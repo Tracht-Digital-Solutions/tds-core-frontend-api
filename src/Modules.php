@@ -14,6 +14,7 @@ use Tds\Ext\Lexware\LexwareModule;
 use Tds\Ext\LiveChatCta\LiveChatCtaModule;
 use Tds\Ext\Messages\MessagesModule;
 use Tds\Ext\Projects\ProjectsModule;
+use Tds\Ext\Referrals\ReferralsModule;
 use Tds\Ext\Shop\ShopModule;
 use Tds\Ext\SupportTickets\SupportTicketsModule;
 use Tds\Ext\TimeTracker\TimeTrackerModule;
@@ -51,6 +52,7 @@ final class Modules
             new ShopModule(),
             new CardsModule(),
             new AnalyticsModule(),
+            new ReferralsModule(),
         ];
     }
 }
