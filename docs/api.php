@@ -138,6 +138,37 @@ return [
     ],
     [
         'method' => 'GET',
+        'pattern' => '/me/setup-status',
+        'tag' => 'Eigenes Konto',
+        'summary' => 'Einrichtungsassistent: was noch nicht eingerichtet ist',
+        'description' => 'Fasst die Punkte der Basis (SMTP, Stripe) und aller Module mit '
+            . '`SetupStatusSource` zusammen und wendet die Wahl des Benutzers an: '
+            . '„Später“ gilt bis zur nächsten Anmeldung (`auth_time` des Tokens), '
+            . '„Ignorieren“ dauerhaft. Nur für Admins; andere bekommen eine leere Liste.',
+        'auth' => 'session',
+        'responses' => [
+            ['status' => 200, 'description' => '`{items: [{id, module, title, description, state, level, href, snoozed, ignored}], open}`'],
+            ['status' => 401, 'description' => 'Keine oder ungültige Sitzung.'],
+        ],
+    ],
+    [
+        'method' => 'POST',
+        'pattern' => '/me/setup-status/{id:[a-z0-9-]+:[a-z0-9_.-]+}',
+        'tag' => 'Eigenes Konto',
+        'summary' => 'Einen Einrichtungspunkt verschieben, ignorieren oder zurückholen',
+        'auth' => 'admin',
+        'params' => [
+            ['in' => 'path', 'name' => 'id', 'type' => 'string', 'description' => 'Punkt-ID, `<modul>:<schlüssel>`.'],
+            ['in' => 'body', 'name' => 'action', 'type' => 'string', 'description' => '`snooze`, `ignore` oder `restore`.'],
+        ],
+        'responses' => [
+            ['status' => 200, 'description' => '`{ok: true}`'],
+            ['status' => 403, 'description' => 'Kein Admin.'],
+            ['status' => 422, 'description' => 'Unbekannte Aktion.'],
+        ],
+    ],
+    [
+        'method' => 'GET',
         'pattern' => '/me/notifications',
         'tag' => 'Eigenes Konto',
         'summary' => 'Zusammengeführter Benachrichtigungs-Feed aller Module',

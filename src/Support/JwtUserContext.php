@@ -33,6 +33,7 @@ final class JwtUserContext implements UserContext, MultiCompanyContext
     private readonly array $permissionList;
     /** @var list<int> */
     private readonly array $companyIdList;
+    private readonly ?int $sessionStartedAt;
 
     /** @param array<string, mixed> $claims */
     public function __construct(array $claims, string $actAsHeader)
@@ -44,6 +45,11 @@ final class JwtUserContext implements UserContext, MultiCompanyContext
 
         $mail = $claims['email'] ?? null;
         $this->email = is_string($mail) && $mail !== '' ? $mail : null;
+
+        // `auth_time` survives the hourly refresh; `iat` is only the fallback
+        // for a token minted before the auth API carried it.
+        $signedIn = $claims['auth_time'] ?? $claims['iat'] ?? null;
+        $this->sessionStartedAt = is_int($signedIn) ? $signedIn : null;
 
         $companies = self::companies($claims);
         if ($this->admin) {
@@ -62,6 +68,17 @@ final class JwtUserContext implements UserContext, MultiCompanyContext
                 $companies,
             ));
         }
+    }
+
+    /**
+     * When this session's sign-in happened (unix seconds), or null.
+     *
+     * Not part of the contract's `UserContext`: only the base uses it, as the
+     * identity of a session for the setup wizard's "Später".
+     */
+    public function sessionStartedAt(): ?int
+    {
+        return $this->sessionStartedAt;
     }
 
     /**

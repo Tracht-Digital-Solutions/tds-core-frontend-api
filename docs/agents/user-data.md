@@ -57,3 +57,12 @@ have their own readers:
 - Official MySQL/MariaDB images ship empty time-zone tables; a session already at Berlin's offset is left
   alone, any other gets the current offset (`tests/TimeZoneTest`).
 - Moving to UTC is a separate cross-module decision, not a refactor.
+
+## Setup wizard (`/me/setup-status`)
+
+`Service\SetupStatus` merges the base items (SMTP, central Stripe) with every module's
+`SetupStatusSource`. Admin-only; others get `{items: [], open: 0}`. Choices live in
+`user_preference` under `setup:snooze:<id>` (= the token's `auth_time`) and `setup:ignore:<id>`,
+written only by `POST /me/setup-status/{id}` — the preferences whitelist does not know them.
+"Später" therefore lasts until the next sign-in: `JwtUserContext::sessionStartedAt()` reads
+`auth_time`, falling back to `iat` for tokens minted before the auth API carried it.

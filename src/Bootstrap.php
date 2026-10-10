@@ -38,6 +38,8 @@ use Tds\CoreFrontendApi\Service\SitePairingService;
 use Tds\CoreFrontendApi\Service\SitemapExclusions;
 use Tds\CoreFrontendApi\Service\SmtpMailer;
 use Tds\CoreFrontendApi\Service\StripeConfig;
+use Tds\CoreFrontendApi\Support\JwtUserContext;
+use Tds\CoreFrontendApi\Service\SetupStatus;
 use Tds\CoreFrontendApi\Support\AnonymousUserContext;
 use Tds\CoreFrontendApi\Support\MigrationRunner;
 use Tds\Frontend\Contract\CacheEvent;
@@ -296,6 +298,57 @@ final class Bootstrap
             return $response
                 ->withHeader('Content-Type', 'application/json')
                 ->withHeader('Cache-Control', 'no-store');
+        });
+
+        // --- Setup wizard (base service) -----------------------------------------
+        // What is not set up yet, across the base and every module implementing
+        // SetupStatusSource. Admin-only: the items name missing credentials, and
+        // only an admin can set them. Non-admins get an empty, valid answer so
+        // the shell's banner needs no permission logic of its own.
+        $app->get('/me/setup-status', function (Request $request, Response $response) use ($container, $registry): Response {
+            $user = $container->get(UserContext::class);
+            if (!$user->isAuthenticated()) {
+                $response->getBody()->write(json_encode(['error' => 'Unauthorized'], JSON_THROW_ON_ERROR));
+                return $response->withStatus(401)->withHeader('Content-Type', 'application/json');
+            }
+            $payload = ['items' => [], 'open' => 0];
+            if ($user->isAdmin()) {
+                $prefs = [];
+                if ($user->userId() !== null) {
+                    try {
+                        $prefs = $container->get(UserPreferenceRepository::class)->all((int) $user->userId());
+                    } catch (\Throwable) {
+                        // No database: every item shows, none is snoozed.
+                    }
+                }
+                $session = $user instanceof JwtUserContext ? $user->sessionStartedAt() : null;
+                $wizard = new SetupStatus($registry->setupStatusSources(), self::baseSetupItems($container));
+                $payload = $wizard->collect($user, $prefs, $session);
+            }
+            $response->getBody()->write(json_encode($payload, JSON_THROW_ON_ERROR));
+            return $response
+                ->withHeader('Content-Type', 'application/json')
+                ->withHeader('Cache-Control', 'no-store');
+        });
+
+        // One choice for one item: "Später" (snooze until the next sign-in),
+        // "Ignorieren", or undo either.
+        $app->post('/me/setup-status/{id:[a-z0-9-]+:[a-z0-9_.-]+}', function (Request $request, Response $response, array $args) use ($container): Response {
+            $user = $container->get(UserContext::class);
+            if (!$user->isAuthenticated() || !$user->isAdmin()) {
+                $response->getBody()->write(json_encode(['error' => 'Forbidden'], JSON_THROW_ON_ERROR));
+                return $response->withStatus($user->isAuthenticated() ? 403 : 401)->withHeader('Content-Type', 'application/json');
+            }
+            $action = (string) (((array) $request->getParsedBody())['action'] ?? '');
+            $session = $user instanceof JwtUserContext ? $user->sessionStartedAt() : null;
+            $writes = SetupStatus::choice((string) $args['id'], $action, $session);
+            if ($writes === [] || $user->userId() === null) {
+                $response->getBody()->write(json_encode(['error' => 'action must be snooze, ignore or restore'], JSON_THROW_ON_ERROR));
+                return $response->withStatus(422)->withHeader('Content-Type', 'application/json');
+            }
+            $container->get(UserPreferenceRepository::class)->setMany((int) $user->userId(), $writes);
+            $response->getBody()->write(json_encode(['ok' => true], JSON_THROW_ON_ERROR));
+            return $response->withHeader('Content-Type', 'application/json');
         });
 
         // --- Runtime settings (admin) ------------------------------------------
@@ -1048,6 +1101,43 @@ final class Bootstrap
     }
 
     /** The platform Stripe account, DB-first with STRIPE_SECRET_KEY as the env fallback. */
+    /**
+     * The base's own setup items: outgoing mail and the central Stripe account.
+     * Each check is the one the feature itself uses, so the wizard cannot say
+     * "eingerichtet" while the feature still does nothing.
+     *
+     * @return list<array<string,string>>
+     */
+    private static function baseSetupItems(Container $container): array
+    {
+        $items = [];
+        try {
+            $items[] = [
+                'id' => 'core:mail',
+                'module' => 'core',
+                'title' => 'E-Mail-Versand (SMTP)',
+                'description' => 'Ohne SMTP verschickt das System keine E-Mails: keine Benachrichtigungen, keine Passwort-Links, keine Ticket-Antworten.',
+                'state' => self::mailConfig($container)->isConfigured() ? 'ok' : 'missing',
+                'level' => 'required',
+                'href' => '/einstellungen#settings-mail',
+            ];
+        } catch (\Throwable) {
+        }
+        try {
+            $items[] = [
+                'id' => 'core:stripe',
+                'module' => 'core',
+                'title' => 'Zahlungen (Stripe)',
+                'description' => 'Das zentrale Stripe-Konto nimmt Zahlungen für Shop, Rechnungen und Tools an. Ohne Schlüssel fehlt Stripe an jeder Kasse.',
+                'state' => self::stripeConfig($container)->isConfigured() ? 'ok' : 'missing',
+                'level' => 'recommended',
+                'href' => '/einstellungen#settings-stripe',
+            ];
+        } catch (\Throwable) {
+        }
+        return $items;
+    }
+
     private static function stripeConfig(Container $container): StripeConfig
     {
         $store = null;
