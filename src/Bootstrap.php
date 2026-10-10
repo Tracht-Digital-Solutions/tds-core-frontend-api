@@ -1135,6 +1135,31 @@ final class Bootstrap
             ];
         } catch (\Throwable) {
         }
+        // The public sites, by the profile their install wizard pairs under.
+        // Only CONNECTED rows count — a pending pairing has no cache token yet.
+        $sites = [
+            'landingpage' => ['Website', 'website-cms'],
+            'blog' => ['Journal', 'blog-cms'],
+            'tools' => ['Tools-Site', 'tools'],
+        ];
+        try {
+            $connections = $container->get(SiteConnectionStore::class);
+            foreach ($sites as $profile => [$label, $panel]) {
+                $items[] = [
+                    'id' => 'core:site-' . $profile,
+                    'module' => 'core',
+                    'title' => "Site-Kopplung: {$label}",
+                    'description' => 'Die Site ist noch nicht mit dem Panel gekoppelt. Erst danach wird ihr Cache nach '
+                        . 'Änderungen erneuert. Gekoppelt wird über /install auf der Site.',
+                    'state' => $connections->connectionsByProfile($profile) !== [] ? 'ok' : 'missing',
+                    'level' => 'recommended',
+                    'href' => "/einstellungen#settings-{$panel}",
+                ];
+            }
+        } catch (\Throwable) {
+            // No database or no encryption key: the store cannot answer, and
+            // guessing "missing" would send the operator after the wrong fix.
+        }
         return $items;
     }
 
