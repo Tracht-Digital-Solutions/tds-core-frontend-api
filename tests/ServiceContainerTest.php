@@ -5,7 +5,11 @@ namespace Tds\CoreFrontendApi\Tests;
 
 use PHPUnit\Framework\TestCase;
 use Tds\CoreFrontendApi\Bootstrap;
+use Tds\CoreFrontendApi\Modules;
+use Tds\Frontend\Contract\Commerce\SaleEvent;
+use Tds\Frontend\Contract\Commerce\SaleEvents;
 use Tds\Frontend\Contract\Mailer;
+use Tds\Frontend\Contract\ModuleRegistry;
 use Tds\Frontend\Contract\UserContext;
 
 /**
@@ -23,6 +27,21 @@ final class ServiceContainerTest extends TestCase
         $mailer = $container->get(Mailer::class);
         self::assertInstanceOf(Mailer::class, $mailer);
         self::assertFalse($mailer->isConfigured(), 'no MAIL_DSN → no-op mailer');
+    }
+
+    public function testSaleEventsIsTheRegistrysDispatcher(): void
+    {
+        // Bound explicitly, not autowired: an autowired SaleEvents would be an
+        // empty no-op, and shop/billing would report every sale to nobody.
+        $events = Bootstrap::createApp(dirname(__DIR__))->getContainer()->get(SaleEvents::class);
+        self::assertInstanceOf(SaleEvents::class, $events);
+
+        $listeners = (new ModuleRegistry(Modules::enabled()))->saleListeners();
+        $sale = new SaleEvent('test', 'boot', 0);
+        $events->paid($sale);
+        self::assertSame([], $events->failures(), 'no listener may fail on a sale it does not know');
+        self::assertNull($events->resolveReferral('NO-SUCH-CODE'));
+        self::assertIsArray($listeners);
     }
 
     public function testUserContextDefaultsToAnonymous(): void

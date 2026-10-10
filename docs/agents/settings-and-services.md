@@ -43,6 +43,13 @@ saved through the generic settings route (secret); `GET /admin/stripe` reports w
 or `STRIPE_SECRET_KEY`) and lists the webhook endpoints composed modules expect (`StripeWebhookSource`);
 `POST /admin/stripe/test` proves the key works.
 
+## `Commerce\SaleEvents`
+
+Bound explicitly in `createApp()` from `ModuleRegistry::saleListeners()` and
+`referralResolvers()`. Shop and billing call it after a payment webhook; the referral
+programme listens. Never leave it to autowiring: an autowired instance is an empty no-op, and
+sales would reach nobody without any error (`ServiceContainerTest`).
+
 ## CORS (`Service\CorsConfig`)
 
 The allow-list is **three unioned layers**: coded baseline ∪ `CORS_ALLOWED_ORIGINS` ∪ rows edited under

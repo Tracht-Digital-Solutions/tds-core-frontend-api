@@ -43,6 +43,7 @@ use Tds\CoreFrontendApi\Service\SetupStatus;
 use Tds\CoreFrontendApi\Support\AnonymousUserContext;
 use Tds\CoreFrontendApi\Support\MigrationRunner;
 use Tds\Frontend\Contract\CacheEvent;
+use Tds\Frontend\Contract\Commerce\SaleEvents;
 use Tds\Frontend\Contract\CacheResult;
 use Tds\Frontend\Contract\Email;
 use Tds\Frontend\Contract\Mailer;
@@ -102,6 +103,17 @@ final class Bootstrap
         // by registerAll() further down, and $app->add() applies to the whole
         // app regardless of when a route was added.
         $registry = new ModuleRegistry(Modules::enabled());
+
+        // One sale dispatcher for every seller (shop orders, billing invoices):
+        // they report paid/reversed sales and ask whose partner code a buyer
+        // brought, without knowing which module listens (the referral
+        // programme). Each listener call is guarded inside SaleEvents, so a
+        // broken listener never reaches a payment webhook.
+        $container->set(SaleEvents::class, new SaleEvents(
+            $registry->saleListeners(),
+            $registry->referralResolvers(),
+            static fn (\Throwable $e) => error_log('[tds-core] sale listener failed: ' . $e->getMessage()),
+        ));
 
         // Site keys gate the PUBLIC SITE-READ routes each module declares
         // (SiteKeyProtected). Added FIRST of the three so it RUNS LAST of them:
