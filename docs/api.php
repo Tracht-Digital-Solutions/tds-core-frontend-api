@@ -273,6 +273,31 @@ return [
     ],
     [
         'method' => 'POST',
+        'pattern' => '/internal/mail/password-reset',
+        'tag' => 'Einstellungen',
+        'summary' => 'Passwort-vergessen-Mail im Auftrag von tds-auth-api senden',
+        'description' => 'Server zu Server: tds-auth-api erzeugt das Einmal-Token und den Link, '
+            . 'dieser Dienst verschickt die Mail mit den SMTP-Einstellungen aus dem Panel. '
+            . 'Authentifiziert mit `Authorization: Bearer <SERVICE_TOKEN>` (Rückfall `ADMIN_TOKEN`), '
+            . 'derselbe Wert wie in tds-auth-api. Der Link muss https sein (http nur für localhost).',
+        'auth' => 'token',
+        'params' => [
+            ['in' => 'body', 'name' => 'email', 'type' => 'string', 'description' => 'Empfänger.'],
+            ['in' => 'body', 'name' => 'name', 'type' => 'string', 'description' => 'Anzeigename für die Anrede, optional.'],
+            ['in' => 'body', 'name' => 'link', 'type' => 'string', 'description' => 'Der Einmal-Link der Anmeldeseite.'],
+            ['in' => 'body', 'name' => 'lang', 'type' => 'string', 'description' => '`de` (Standard) oder `en`.'],
+            ['in' => 'body', 'name' => 'validMinutes', 'type' => 'int', 'description' => 'Gültigkeit für den Mailtext.'],
+        ],
+        'responses' => [
+            ['status' => 204, 'description' => 'Mail an den SMTP-Server übergeben.'],
+            ['status' => 401, 'description' => 'Token fehlt oder falsch.'],
+            ['status' => 422, 'description' => 'Ungültige Adresse oder unzulässiger Link.'],
+            ['status' => 502, 'description' => 'Der SMTP-Server hat abgelehnt.'],
+            ['status' => 503, 'description' => 'Kein Service-Token oder kein SMTP konfiguriert.'],
+        ],
+    ],
+    [
+        'method' => 'POST',
         'pattern' => '/admin/mail/test',
         'tag' => 'Einstellungen',
         'summary' => 'Testmail über die aktuelle SMTP-Konfiguration senden',

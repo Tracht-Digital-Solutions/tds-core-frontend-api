@@ -26,6 +26,7 @@ use Tds\CoreFrontendApi\Service\ConnectedSiteCacheService;
 use Tds\CoreFrontendApi\Service\CorsConfig;
 use Tds\CoreFrontendApi\Service\HttpSiteCache;
 use Tds\CoreFrontendApi\Service\MailConfig;
+use Tds\CoreFrontendApi\Service\PasswordResetMail;
 use Tds\CoreFrontendApi\Service\NotificationFeed;
 use Tds\CoreFrontendApi\Service\NullMailer;
 use Tds\CoreFrontendApi\Service\PairingRateLimiter;
@@ -515,6 +516,47 @@ final class Bootstrap
 
             $response->getBody()->write(json_encode(['ok' => true, 'to' => $to], JSON_THROW_ON_ERROR));
             return $response->withHeader('Content-Type', 'application/json');
+        });
+
+        // --- Passwort vergessen (server to server) -----------------------------
+        //
+        // tds-auth-api issues the one-time token and builds the link; this
+        // service owns SMTP, so the mail goes out here. Authenticated with the
+        // service token both services share (SERVICE_TOKEN, falling back to
+        // ADMIN_TOKEN like auth-api) — no JWT, the caller is a service, not a
+        // user. Unconfigured token → 503, never an open relay.
+        $app->post('/internal/mail/password-reset', function (Request $request, Response $response) use ($container): Response {
+            $token = self::env('SERVICE_TOKEN', '');
+            if ($token === '') {
+                $token = self::env('ADMIN_TOKEN', '');
+            }
+            $json = static function (Response $response, int $status, array $payload): Response {
+                $response->getBody()->write(json_encode($payload, JSON_THROW_ON_ERROR));
+                return $response->withStatus($status)->withHeader('Content-Type', 'application/json');
+            };
+            if ($token === '') {
+                return $json($response, 503, ['error' => 'Service token not configured']);
+            }
+            if (!PasswordResetMail::authorized($request->getHeaderLine('Authorization'), $token)) {
+                return $json($response, 401, ['error' => 'Unauthorized']);
+            }
+
+            $email = PasswordResetMail::fromPayload((array) $request->getParsedBody());
+            if ($email === null) {
+                return $json($response, 422, ['error' => 'Invalid payload']);
+            }
+
+            $mailer = $container->get(Mailer::class);
+            if (!$mailer->isConfigured()) {
+                return $json($response, 503, ['error' => 'Mail not configured']);
+            }
+            try {
+                $mailer->send($email);
+            } catch (\Throwable $e) {
+                error_log('[tds-core-frontend-api] password reset mail failed: ' . MailConfig::redact($e->getMessage()));
+                return $json($response, 502, ['error' => 'Mail delivery failed']);
+            }
+            return $response->withStatus(204);
         });
 
         // --- Zahlungen / Stripe (admin) -----------------------------------------

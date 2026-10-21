@@ -32,6 +32,10 @@ core-owned (`MAIL_FROM` / `MAIL_FROM_NAME`, overridable in the store); no extens
 - **`POST /admin/mail/test`** sends a test mail. SMTP errors go through `MailConfig::redact()`, because
   Symfony echoes the DSN including the password in some failures.
 - A malformed stored DSN degrades to `NullMailer`; resolving the mailer must never 500 another route.
+- **`POST /internal/mail/password-reset`** sends tds-auth-api's forgotten-password mail
+  (`Service\PasswordResetMail`). Bearer `SERVICE_TOKEN` (fallback `ADMIN_TOKEN`) — the same value as in
+  `services/auth/.env`; unset answers 503. The link must be https (http only on localhost), so a leaked
+  token cannot turn the route into a relay for arbitrary links.
 - **Keep `symfony/mailer` and `symfony/mime` on the same major as `tds-customer-api`.** In the gateway's
   in-process mode the first-dispatched service's autoloader wins for shared packages (customer is dispatched
   before frontend by the aggregate `/healthz`). `symfony/mime` is declared explicitly.
