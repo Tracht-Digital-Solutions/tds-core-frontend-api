@@ -36,6 +36,8 @@ core-owned (`MAIL_FROM` / `MAIL_FROM_NAME`, overridable in the store); no extens
   (`Service\PasswordResetMail`). Bearer `SERVICE_TOKEN` (fallback `ADMIN_TOKEN`) — the same value as in
   `services/auth/.env`; unset answers 503. The link must be https (http only on localhost), so a leaked
   token cannot turn the route into a relay for arbitrary links.
+- **`POST /internal/mail/account-confirm`** sends the confirmation mail of a self-registered tds-auth-api
+  account (same handler, token and link rules as the reset mail; `validHours` instead of `validMinutes`).
 - **Keep `symfony/mailer` and `symfony/mime` on the same major as `tds-customer-api`.** In the gateway's
   in-process mode the first-dispatched service's autoloader wins for shared packages (customer is dispatched
   before frontend by the aggregate `/healthz`). `symfony/mime` is declared explicitly.

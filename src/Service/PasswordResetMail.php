@@ -61,7 +61,8 @@ final class PasswordResetMail
         return new Email($to, $name, 'Passwort zurücksetzen', $html, $text);
     }
 
-    private static function acceptableLink(string $link): bool
+    /** https, or http on localhost only. Shared by every mail sent on auth-api's behalf. */
+    public static function acceptableLink(string $link): bool
     {
         $parts = parse_url($link);
         if ($parts === false || !isset($parts['scheme'], $parts['host'])) {
