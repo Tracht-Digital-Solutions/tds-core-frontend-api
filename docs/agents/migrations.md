@@ -47,6 +47,8 @@ Each module owns a distinct date band; a new migration stays in its module's ban
 | shop | `202609*` (`20260907*`–`20260915*`) |
 | cards | `20260929*` |
 | analytics | `20261009*` |
+| referrals | `20261011*` |
+| opensource | `20261028*` |
 
 Check the module's `php/db/migrations/` for the exact files before adding one.
 

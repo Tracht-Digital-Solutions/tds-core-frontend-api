@@ -106,6 +106,28 @@ final class SitePairingServiceTest extends TestCase
      * service did not know the type: every GET /cards/connection threw (500 on
      * the settings page) and the pairing could never be created.
      */
+    /**
+     * tds-ext-opensource pairs each project site as `opensource/<slug>` with
+     * the `opensource` profile and the one scope `/opensource/projects`.
+     */
+    public function testAnOpenSourceProjectSiteIsAPairableResource(): void
+    {
+        $service = $this->dbService(static fn (): array => ['status' => 503]);
+        self::assertNull($service->get('opensource', 'wparted'));
+        $pairing = $service->createPairing(
+            'opensource',
+            'wparted',
+            'http://localhost:4321',
+            'opensource',
+            ['opensource' => 'wparted'],
+            ['/opensource/projects'],
+        );
+        $service->deliverPairing($pairing, 'http://localhost:8100');
+        $payload = $service->exchange($pairing->pairingToken, 'opensource', $pairing->origin, 'http://localhost:8100');
+        self::assertStringStartsWith('tdsk_opensource_', $payload['connection']['site_key']);
+        self::assertSame(['/opensource/projects'], $payload['connection']['scopes']);
+    }
+
     public function testTheBusinessCardAppIsAPairableResource(): void
     {
         $service = $this->dbService(static fn (): array => ['status' => 503]);

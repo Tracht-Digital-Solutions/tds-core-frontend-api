@@ -80,6 +80,10 @@ final class CorsConfig
         // browser to report how many cards the API knows. Without it the wizard
         // reports a connection failure on a perfectly configured host.
         'https://karte.tracht-digital.de',
+        // The open-source project sites (tds-ext-opensource). The donate button
+        // POSTs /opensource/donate/{slug} from the visitor's browser, and the
+        // setup wizard probes the project from there too.
+        'https://wparted.tracht-digital.de',
         'https://auth.tracht-digital.de',
     ];
 

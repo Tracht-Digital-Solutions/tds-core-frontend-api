@@ -1,6 +1,6 @@
 # Site connections, site keys and pairing
 
-The credential that binds a public site (landing page, blog, tools, shop, auth, cards, or a custom one) to
+The credential that binds a public site (landing page, blog, tools, shop, auth, cards, the open-source project sites, or a custom one) to
 this API, and the platform's record that a site is connected. Operator handbook: [SITES.md](../../SITES.md).
 
 ## Components

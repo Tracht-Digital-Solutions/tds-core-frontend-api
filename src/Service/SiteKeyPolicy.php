@@ -74,6 +74,10 @@ final class SiteKeyPolicy
         // `/content/cards` from the browser. `CorsConfigTest` is what catches
         // the omission — it did, here.
         ['id' => 'cards', 'label' => 'Visitenkarten', 'origins' => ['https://karte.tracht-digital.de']],
+        // The open-source project sites (tds-ext-opensource): one profile for
+        // all of them, like cards. The project is the connection's resource id
+        // (`opensource/<slug>`). Keep in step with tds-shared's profiles.ts.
+        ['id' => 'opensource', 'label' => 'Open-Source-Seiten', 'origins' => ['https://wparted.tracht-digital.de']],
         ['id' => 'auth', 'label' => 'Login', 'origins' => ['https://auth.tracht-digital.de']],
     ];
 

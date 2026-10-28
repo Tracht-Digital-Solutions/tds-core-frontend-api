@@ -114,7 +114,7 @@ final class SiteKeyPolicyTest extends TestCase
         // `tds-shared/src/install/profiles.ts`, and a site missing from either
         // side announces itself nowhere — no key can be issued for it here, no
         // setup wizard exists for it there.
-        self::assertSame(['landingpage', 'blog', 'tools', 'shop', 'cards', 'auth'], $ids);
+        self::assertSame(['landingpage', 'blog', 'tools', 'shop', 'cards', 'opensource', 'auth'], $ids);
     }
 
     public function testCustomSitesFollowTheKnownOnes(): void

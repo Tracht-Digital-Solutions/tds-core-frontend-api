@@ -406,8 +406,10 @@ final class SitePairingService implements SiteConnections
         // `cards`/`default`, for every customer domain. It was missing here, so
         // the module's GET /cards/connection threw on every call (500) and its
         // pairing could never be created.
-        if (!in_array($type, ['blog', 'website', 'tools', 'cards'], true)) {
-            throw new SitePairingException('resource_type muss blog, website, tools oder cards sein.');
+        // `opensource` is tds-ext-opensource: one connection per project,
+        // `opensource/<slug>`.
+        if (!in_array($type, ['blog', 'website', 'tools', 'cards', 'opensource'], true)) {
+            throw new SitePairingException('resource_type muss blog, website, tools, cards oder opensource sein.');
         }
         if ($id === '' || strlen($id) > 191 || preg_match('/[\x00-\x1f\x7f]/', $id) === 1) {
             throw new SitePairingException('resource_id ist ungültig.');
@@ -422,8 +424,8 @@ final class SitePairingService implements SiteConnections
             'landing', 'website' => 'landingpage',
             default => $profile,
         };
-        if (!in_array($profile, ['blog', 'landingpage', 'tools', 'cards'], true)) {
-            throw new SitePairingException('profile muss blog, landingpage, tools oder cards sein.');
+        if (!in_array($profile, ['blog', 'landingpage', 'tools', 'cards', 'opensource'], true)) {
+            throw new SitePairingException('profile muss blog, landingpage, tools, cards oder opensource sein.');
         }
         return $profile;
     }
@@ -498,6 +500,7 @@ final class SitePairingService implements SiteConnections
             ],
             'tools' => ['/tools/catalog', '/tools/registry', '/tools/guides'],
             'cards' => ['/content/card', '/content/cards'],
+            'opensource' => ['/opensource/projects'],
         };
     }
 
@@ -508,6 +511,7 @@ final class SitePairingService implements SiteConnections
             'website' => 'landingpage',
             'tools' => 'tools',
             'cards' => 'cards',
+            'opensource' => 'opensource',
         };
         if (!hash_equals($expected, $profile)) {
             throw new SitePairingException('CMS-Ressource und Site-Profil passen nicht zusammen.');

@@ -24,6 +24,7 @@
     "tracht-digital-solutions/tds-ext-lexware": "*",
     "tracht-digital-solutions/tds-ext-live-chat-cta": "*",
     "tracht-digital-solutions/tds-ext-messages": "*",
+    "tracht-digital-solutions/tds-ext-opensource": "*",
     "tracht-digital-solutions/tds-ext-projects": "*",
     "tracht-digital-solutions/tds-ext-referrals": "*",
     "tracht-digital-solutions/tds-ext-shop": "*",
@@ -109,6 +110,10 @@
     {
       "type": "path",
       "url": "../tds-ext-analytics-pkg"
+    },
+    {
+      "type": "path",
+      "url": "../tds-ext-opensource-pkg"
     }
   ],
   "autoload": {

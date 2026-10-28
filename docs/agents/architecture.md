@@ -8,7 +8,7 @@ service processes. It **must boot with zero modules**.
 
 Enabled modules (the union both products need): time-tracker, customers, billing, lexware, tools,
 messages, projects, documents, support-tickets, contact-tickets, live-chat-cta, website-cms, blog-cms,
-shop, cards, analytics, referrals.
+shop, cards, analytics, referrals, opensource.
 
 ## Base routes
 
@@ -40,7 +40,7 @@ construction); the prose comes from each module's optional `ApiDocSource`, joine
 
 Modules serve the public reads without authentication (`AuthMiddleware` is non-gating): blog-cms
 (`/content/blog*`, `/content/topics`, `/content/snippets`), website-cms (`/content/landing`,
-`/content/legal*`), tools, shop and cards. The public sites fetch them server-side through the gateway's
+`/content/legal*`), tools, shop, cards and opensource (`/opensource/projects/{slug}`). The public sites fetch them server-side through the gateway's
 catch-all. Only published content leaks, and every one degrades to an empty payload on a DB error.
 
 ## Auth: `UserContext`

@@ -13,6 +13,7 @@ use Tds\Ext\Documents\DocumentsModule;
 use Tds\Ext\Lexware\LexwareModule;
 use Tds\Ext\LiveChatCta\LiveChatCtaModule;
 use Tds\Ext\Messages\MessagesModule;
+use Tds\Ext\Opensource\OpensourceModule;
 use Tds\Ext\Projects\ProjectsModule;
 use Tds\Ext\Referrals\ReferralsModule;
 use Tds\Ext\Shop\ShopModule;
@@ -53,6 +54,7 @@ final class Modules
             new CardsModule(),
             new AnalyticsModule(),
             new ReferralsModule(),
+            new OpensourceModule(),
         ];
     }
 }

@@ -1203,6 +1203,7 @@ final class Bootstrap
             'landingpage' => ['Website', 'website-cms'],
             'blog' => ['Journal', 'blog-cms'],
             'tools' => ['Tools-Site', 'tools'],
+            'opensource' => ['Open-Source-Seiten', 'opensource'],
         ];
         try {
             $connections = $container->get(SiteConnectionStore::class);
